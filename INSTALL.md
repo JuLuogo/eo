@@ -20,6 +20,10 @@ cd /opt/edge-optimizer
 sudo ./install.sh
 ```
 
+> 仓库是**公开**的，clone 不需要账号密码。如果你看到 `Username for 'https://gitee.com'`，
+> 说明服务器上存了过期的旧凭据 —— 见文末 FAQ「拉代码时一直提示用户名密码」。
+> 拉取失败时脚本会自动改用压缩包下载，通常不影响安装。
+
 安装过程中会问你两件事：
 
 ```
@@ -163,6 +167,40 @@ EO_NETWORK=lt EO_WEB_PORT=8787 ./install.sh --yes
 ---
 
 ## 五、常见问题
+
+**Q：拉代码时一直提示 `Username for 'https://gitee.com'`，输了密码还是 `Authentication failed`**
+
+仓库是**公开**的，正常不需要任何认证。出现这个提示是因为**服务器上存着一份过期的 Gitee 凭据**，
+git 会自动拿它去认证，失败后又来问你用户名密码。
+
+装脚本已经禁用了凭据询问并忽略本机凭据，正常情况下不会再弹。如果你想根治（其它 git 操作也不再弹）：
+
+```bash
+git config --global --unset credential.helper
+rm -f ~/.git-credentials
+git config --global --list | grep -i credential     # 确认已清干净，应无输出
+```
+
+彻底不碰 git 的装法（推荐给只有这一台机器的场景）：
+
+```bash
+mkdir -p /opt/edge-optimizer && cd /opt/edge-optimizer
+curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz | tar xz --strip-components=1
+sudo ./install.sh
+```
+
+如果哪天你把仓库改成了私有，用令牌拉取：
+
+```bash
+GITEE_USER=你的用户名 GITEE_TOKEN=你的私人令牌 \
+  curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+```
+
+**Q：git 拉取失败时脚本会怎么办**
+
+会自动改用压缩包下载（`/repository/archive/main.tar.gz`，无需认证）。
+所以即使凭据、网络策略有问题，安装通常也能继续；只是这种方式没有 `.git`，
+以后升级要重新下载，或者改成 `git clone` 一次。
 
 **Q：`EO_WEB_PORT` 在 `.env` 里改了，为什么网页上还是旧端口？**
 端口是启动参数，改完要重启服务：`sudo ./deploy.sh restart`。
