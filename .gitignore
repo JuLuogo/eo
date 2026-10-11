@@ -10,10 +10,14 @@ history/
 *.bak
 yes.txt
 
-# 根目录的临时文件（前导 / 锚定到仓库根，避免误伤 eo/__init__.py 这类文件）
+# 测试/临时文件（前导 / 锚定仓库根，避免误伤 eo/__init__.py 这类文件）
 /_*.py
 /_*.sh
 /_*.txt
+/verify_*.sh
+/run_*.sh
+/cleanup_*.sh
+*.tmp
 
 # Python
 __pycache__/
@@ -26,12 +30,3 @@ venv/
 .vscode/
 .idea/
 *.swp
-
-# 测试/临时脚本（不要提交）
-/_*.py
-/_*.sh
-/_*.txt
-/verify_*.sh
-/run_*.sh
-/cleanup_*.sh
-*.tmp
