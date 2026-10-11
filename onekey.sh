@@ -4,10 +4,10 @@
 # 一条命令完成：拉代码 -> 写配置 -> 构建/拉取镜像 -> 启动 -> 打印访问地址
 #
 # 用法（把 <...> 换成真实值）：
-#   HUAWEI_AK=xxx HUAWEI_SK=yyy EO_NETWORK=lt EO_WEB_PORT=8787 bash -c \
-#     "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
+#   HUAWEI_AK=xxx HUAWEI_SK=yyy EO_NETWORK=lt bash -c \
+#     "$(curl -fsSL https://gitee.com/peroe/eo/raw/main/onekey.sh)"
 #
-# 全部可用环境变量（都可选，除 AK/SK 外都有默认值）：
+# 全部可用环境变量（除密钥外都有默认值）：
 #   HUAWEI_AK        华为云 AccessKey ID（下发 DNS 必需）
 #   HUAWEI_SK        华为云 AccessKey Secret
 #   EO_NETWORK       本机运营商：lt=联通 / dx=电信 / yd=移动（默认自动识别）
@@ -19,80 +19,34 @@
 #   EO_WEB_TOKEN     网页访问令牌（默认自动生成）
 #   EO_WEBHOOK       异常通知 webhook（可选）
 #   DIR              安装目录（默认 /opt/edge-optimizer）
-#   USE_GHCR         1=从 GHCR 拉取现成镜像（默认 0=本机构建）
-#   IMAGE            镜像名（USE_GHCR=1 时生效，默认 ghcr.io/julugo/eo:latest）
-#   GHCR_TOKEN       GitHub 私人令牌（勾选 read:packages）。GHCR 包为私有时，
-#                    带上它即可自动登录拉取，省去在服务器上手动 docker login
+#   REPO             代码源（默认 Gitee；可设为 GitHub 地址）
+#   USE_GHCR         1=从 GHCR 拉现成镜像（默认 0=本机构建）
+#   IMAGE            镜像名（USE_GHCR=1 时生效）
+#   GHCR_TOKEN       GitHub 私人令牌（勾选 read:packages），私有包时自动登录
 #   GHCR_USER        GitHub 用户名（默认 JuLuogo）
-#   REPO             代码源，默认 Gitee（境内稳定）；可设为 GitHub 地址
-#   SET_REGISTRY_MIRROR  1 = 写入 /etc/docker/daemon.json 配置国内镜像加速
-#                    （拉基础镜像用；境内建议开）
+#   SET_REGISTRY_MIRROR  1=写入 Docker 国内镜像加速配置
 set -euo pipefail
 
 DIR="${DIR:-/opt/edge-optimizer}"
-# 代码源：默认 Gitee（境内稳定）。想走 GitHub 可用
-#   REPO=https://github.com/JuLuogo/eo.git bash -c "$(curl ...)"
 REPO="${REPO:-https://gitee.com/peroe/eo.git}"
+REPO_FALLBACK="${REPO_FALLBACK:-https://github.com/JuLuogo/eo.git}"
 BRANCH="${BRANCH:-main}"
 USE_GHCR="${USE_GHCR:-0}"
 IMAGE="${IMAGE:-ghcr.io/julugo/eo:latest}"
 
-# GitHub 文件代理：境内直连 raw.githubusercontent.com 常失败，这里按实测速度排序，
-# 逐个尝试，全失败才回退直连。用法：<前缀><完整 raw 地址>
-GH_FILE_MIRRORS="
-https://gh-proxy.com/
-https://gh.llkk.cc/
-https://ghproxy.net/
-https://ghfast.top/
-"
-GH_RAW_BASE="https://raw.githubusercontent.com/JuLuogo/eo/${BRANCH}"
-
-# 带代理回退的下载：download <相对路径> <输出文件>
-download_from_github() {
-    local rel="$1" out="$2" prefix
-    for prefix in $GH_FILE_MIRRORS; do
-        if curl -fsSL --connect-timeout 10 --max-time 60 \
-                "${prefix}${GH_RAW_BASE}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-            say "已通过镜像下载 $rel（${prefix%%/*//*}）"
-            return 0
-        fi
-    done
-    # jsDelivr 兜底（直接按仓库路径，不是 raw 前缀形式）
-    if curl -fsSL --connect-timeout 10 --max-time 60 \
-            "https://cdn.jsdelivr.net/gh/JuLuogo/eo@${BRANCH}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-        say "已通过 jsDelivr 下载 $rel"
-        return 0
-    fi
-    if curl -fsSL --connect-timeout 10 --max-time 60 \
-            "${GH_RAW_BASE}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-        say "已直连下载 $rel"
-        return 0
-    fi
-    return 1
-}
-
-# 拉取代码：先试主源，再试备用源（Gitee <-> GitHub 互为备份）
-clone_or_update() {
-    local repo="$1"
-    if [ -d "$DIR/.git" ]; then
-        say "更新已有代码：$DIR（$repo）"
-        git -C "$DIR" remote set-url origin "$repo" 2>/dev/null || true
-        if git -C "$DIR" fetch --quiet origin "$BRANCH" 2>/dev/null; then
-            git -C "$DIR" checkout --quiet "$BRANCH" 2>/dev/null || true
-            git -C "$DIR" merge --ff-only "origin/$BRANCH" --quiet 2>/dev/null || \
-                warn "更新失败，沿用当前版本"
-            return 0
-        fi
-        warn "从 $repo 更新失败，尝试备用源…"
-        return 1
-    fi
-    say "克隆代码：$repo -> $DIR"
-    git clone --quiet --branch "$BRANCH" "$repo" "$DIR" 2>/dev/null
-}
-
 say()  { printf '\033[1;34m[onekey]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# 带超时执行（没有 timeout 命令时直接执行）
+run_with_timeout() {
+    local seconds="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
 
 # --------------------------------------------------------------------------
 # 1. Docker 检查
@@ -116,9 +70,7 @@ fi
 say "Docker: $(docker --version)"
 
 # --------------------------------------------------------------------------
-# 1.5 境内网络优化：可选写入 Docker 镜像加速
-#     SET_REGISTRY_MIRROR=1 时把加速器写进 /etc/docker/daemon.json
-#     （拉 python:3.12-slim 这类基础镜像会明显更快/更稳）
+# 1.5 可选：写入 Docker 国内镜像加速
 # --------------------------------------------------------------------------
 configure_registry_mirror() {
     local conf=/etc/docker/daemon.json
@@ -150,54 +102,101 @@ if [ "${SET_REGISTRY_MIRROR:-0}" = "1" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 2. 拉取/更新代码（主源失败自动换备用源）
+# 2. 获取代码
+#   已有仓库：暂存本地改动后更新；更新失败【直接终止】，绝不用旧代码继续构建
+#   全新安装：主源 -> 备用源 -> 压缩包
 # --------------------------------------------------------------------------
 export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
+
+update_repo() {
+    local repo="$1"
+    say "更新已有代码：$DIR（$repo）"
+
+    # 本地有改动时先备份并暂存，否则 pull 会被拒绝
+    if ! git -C "$DIR" diff --quiet 2>/dev/null || \
+       ! git -C "$DIR" diff --cached --quiet 2>/dev/null; then
+        local stamp backup
+        stamp="$(date '+%Y%m%d-%H%M%S')"
+        backup="$DIR/../edge-optimizer-local-$stamp.patch"
+        git -C "$DIR" diff HEAD > "$backup" 2>/dev/null || true
+        warn "检测到本地未提交的修改，已备份到 $backup"
+        if git -C "$DIR" stash push --include-untracked -m "onekey-$stamp" >/dev/null 2>&1; then
+            say "已暂存本地修改（git stash），需要时用 git stash pop 找回"
+        else
+            warn "git stash 失败，改为重置到远端版本"
+            git -C "$DIR" checkout --quiet -- . 2>/dev/null || true
+        fi
+    fi
+
+    git -C "$DIR" remote set-url origin "$repo" 2>/dev/null || true
+    git -C "$DIR" fetch --quiet origin "$BRANCH" 2>/dev/null || return 1
+    git -C "$DIR" checkout --quiet "$BRANCH" 2>/dev/null || true
+    if ! git -C "$DIR" merge --ff-only "origin/$BRANCH" --quiet 2>/dev/null; then
+        warn "无法快进合并，重置到远端 $BRANCH"
+        git -C "$DIR" reset --hard --quiet "origin/$BRANCH" 2>/dev/null || return 1
+    fi
+    say "代码已更新至 $(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+    return 0
+}
+
+clone_repo() {
+    local repo="$1"
+    say "克隆代码：$repo -> $DIR"
+    run_with_timeout 180 git clone --quiet --branch "$BRANCH" "$repo" "$DIR" 2>/dev/null
+}
+
+fetch_archive() {
+    local u
+    for u in \
+        "https://gitee.com/peroe/eo/repository/archive/${BRANCH}.tar.gz" \
+        "https://github.com/JuLuogo/eo/archive/refs/heads/${BRANCH}.tar.gz"
+    do
+        say "尝试压缩包：$u"
+        if curl -fL --connect-timeout 15 --max-time 300 "$u" -o /tmp/eo-src.tar.gz 2>/dev/null \
+           && tar xzf /tmp/eo-src.tar.gz -C "$DIR" --strip-components=1 2>/dev/null; then
+            rm -f /tmp/eo-src.tar.gz
+            say "已通过压缩包获取代码"
+            return 0
+        fi
+    done
+    rm -f /tmp/eo-src.tar.gz
+    return 1
+}
+
 if [ -f "./run.py" ] && [ -f "./docker-compose.yml" ]; then
     say "当前目录已是项目根目录"
     DIR="$(pwd)"
+elif [ -d "$DIR/.git" ]; then
+    if ! update_repo "$REPO"; then
+        warn "从 $REPO 更新失败，尝试备用源…"
+        update_repo "$REPO_FALLBACK" || die "两个源都更新失败，已中止。
+必须拿到最新代码才能构建出正确的镜像，请先手动确认：
+    cd $DIR && git status && git pull
+或彻底重来：
+    rm -rf $DIR 后重新执行本命令"
+    fi
 else
-    command -v git >/dev/null 2>&1 || die "需要 git 拉取代码，请先安装 git
-    （或者直接把项目解压到 $DIR 后，在该目录里重新执行本脚本）"
+    command -v git >/dev/null 2>&1 || die "需要 git 拉取代码，请先安装 git"
     mkdir -p "$(dirname "$DIR")"
-
-    if [ -d "$DIR/.git" ]; then
-        clone_or_update "$REPO" || clone_or_update "$REPO_FALLBACK" || \
-            warn "两个源都更新失败，沿用当前版本"
-    else
-        # 主源（默认 Gitee）
-        if ! clone_or_update "$REPO"; then
-            warn "从 $REPO 拉取失败，尝试备用源…"
+    if ! clone_repo "$REPO"; then
+        warn "从 $REPO 克隆失败，尝试备用源…"
+        rm -rf "$DIR"
+        if ! clone_repo "$REPO_FALLBACK"; then
             rm -rf "$DIR"
-            if ! clone_or_update "$REPO_FALLBACK"; then
-                rm -rf "$DIR"
-                # 最后兜底：压缩包（Gitee / GitHub 的归档）
-                say "git 拉取都失败，改用压缩包下载…"
-                mkdir -p "$DIR"
-                ok=0
-                for u in \
-                    "https://gitee.com/peroe/eo/repository/archive/${BRANCH}.tar.gz" \
-                    "https://github.com/JuLuogo/eo/archive/refs/heads/${BRANCH}.tar.gz"
-                do
-                    if curl -fL --connect-timeout 15 --max-time 300 "$u" -o /tmp/eo-src.tar.gz 2>/dev/null \
-                       && tar xzf /tmp/eo-src.tar.gz -C "$DIR" --strip-components=1 2>/dev/null; then
-                        rm -f /tmp/eo-src.tar.gz
-                        say "已通过压缩包获取代码：$u"
-                        ok=1
-                        break
-                    fi
-                done
-                [ "$ok" = "1" ] || die "代码获取失败。请手动下载后放到 $DIR 再执行本脚本：
+            say "git 克隆都失败，改用压缩包…"
+            mkdir -p "$DIR"
+            fetch_archive || die "代码获取失败。请手动下载后解压到 $DIR 再执行本脚本：
     Gitee  : https://gitee.com/peroe/eo
     GitHub : https://github.com/JuLuogo/eo"
-            fi
         fi
     fi
 fi
+
 cd "$DIR"
+say "使用代码版本：$(git rev-parse --short HEAD 2>/dev/null || echo '未知（压缩包方式）')"
 
 # --------------------------------------------------------------------------
-# 3. 识别运营商（未指定时）
+# 3. 识别运营商
 # --------------------------------------------------------------------------
 detect_carrier() {
     if [ -f "./eo/deploytool.py" ] && command -v python3 >/dev/null 2>&1; then
@@ -262,8 +261,6 @@ fi
 # --------------------------------------------------------------------------
 if [ "$USE_GHCR" = "1" ]; then
     say "从 GHCR 拉取现成镜像：$IMAGE"
-
-    # 私有包需要先登录。提供了 GHCR_TOKEN 就自动登录（令牌需勾选 read:packages）
     if [ -n "${GHCR_TOKEN:-}" ]; then
         if printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-JuLuogo}" --password-stdin >/dev/null 2>&1; then
             say "已登录 ghcr.io（用户 ${GHCR_USER:-JuLuogo}）"
@@ -271,19 +268,14 @@ if [ "$USE_GHCR" = "1" ]; then
             warn "GHCR 登录失败，继续尝试匿名拉取"
         fi
     fi
-
-    if ! docker pull "$IMAGE"; then
-        warn "拉取失败。GHCR 的包默认是【私有】的，两种解决方式："
-        warn "  A) 到 GitHub 把包改成公开（一次性，之后免登录）："
-        warn "     仓库页 -> 右侧 Packages -> eo -> Package settings"
-        warn "     -> Danger Zone -> Change package visibility -> Public"
-        warn "  B) 保持私有，用 GitHub 私人令牌（勾选 read:packages）自动登录："
-        warn "     重新执行本命令，并加上 GHCR_TOKEN=<你的GitHub令牌>"
-        warn "或改用本机构建（去掉 USE_GHCR=1 即可）。"
+    if ! run_with_timeout 600 docker pull "$IMAGE"; then
+        warn "拉取失败。GHCR 在境内连通性差，普通 registry-mirrors 也代理不了它。建议："
+        warn "  A) 改用本机构建（去掉 USE_GHCR=1 即可，apt/pip 源已默认国内镜像）"
+        warn "  B) 把镜像推到国内仓库后指定 IMAGE=<国内仓库地址>"
+        warn "  C) 包为私有时：加 GHCR_TOKEN=<GitHub令牌，勾选 read:packages>"
         exit 1
     fi
     docker tag "$IMAGE" edge-optimizer:latest
-    # 强制用拉下来的镜像，绝不触发本地构建
     EO_IMAGE="edge-optimizer:latest" $COMPOSE up -d --no-build
 else
     say "本机构建并启动（首次约 2~5 分钟）…"
@@ -302,6 +294,7 @@ printf '  ==========================================================\n'
 printf '   运营商   : %s (%s)\n' "$(carrier_label "$CARRIER")" "$CARRIER"
 printf '   端口     : %s\n' "$PORT"
 printf '   访问地址 : http://%s:%s/?token=%s\n' "${IP:-<服务器IP>}" "$PORT" "$TOKEN"
+printf '   代码版本 : %s\n' "$(git rev-parse --short HEAD 2>/dev/null || echo '压缩包方式')"
 if [ -n "$STATUS" ]; then printf '   容器状态 : %s\n' "$STATUS"; fi
 printf '  ==========================================================\n'
 printf '\n'
@@ -309,7 +302,8 @@ printf '  查看日志   : cd %s && %s logs -f\n' "$DIR" "$COMPOSE"
 printf '  重启       : cd %s && %s restart\n' "$DIR" "$COMPOSE"
 printf '  停止       : cd %s && %s down\n' "$DIR" "$COMPOSE"
 printf '  环境体检   : cd %s && %s run --rm optimizer doctor\n' "$DIR" "$COMPOSE"
+printf '  离线自检   : cd %s && %s run --rm optimizer selftest\n' "$DIR" "$COMPOSE"
 printf '  跑一轮优选 : cd %s && %s run --rm optimizer scan --network %s -q\n' "$DIR" "$COMPOSE" "$CARRIER"
 printf '\n'
-printf '  ⚠ 下一步：确认结果没问题后，在网页上把 DNS 模式从 dry-run 改成「执行」才会真正改解析\n'
+printf '  确认结果没问题后，在网页上把 DNS 模式从 dry-run 改成「执行」才会真正改解析\n'
 printf '\n'
