@@ -1,18 +1,19 @@
-# 换行统一：shell 脚本 / Dockerfile 必须是 LF，否则 Linux 上会报
-# "bad interpreter: No such file or directory" 或容器启动失败。
+# 统一换行：shell 脚本与 Dockerfile 必须是 LF，
+# 否则 Linux 上会报 "bad interpreter" 或 "syntax error near unexpected token"
 * text=auto eol=lf
 *.sh text eol=lf
 Dockerfile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-docker-entrypoint.sh text eol=lf
-
-# 明确的二进制
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+# Windows 批处理保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# 二进制文件不做转换
 *.png binary
 *.jpg binary
-*.ico binary
+*.gif binary
 *.gz binary
-*.zip binary
-
-# Git 统计时把生成物当文档，避免语言统计跑偏
-targets/*.txt linguist-documentation
+*.whl binary

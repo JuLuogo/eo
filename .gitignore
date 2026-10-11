@@ -1,13 +1,19 @@
 # 密钥与运行产物 —— 绝不能提交
 .env
 .env.local
+.env.*
+!.env.example
 config/
 results/
+history/
 *.log
 *.bak
-_*.py
-_*.sh
-_*.txt
+yes.txt
+
+# 根目录的临时文件（前导 / 锚定到仓库根，避免误伤 eo/__init__.py 这类文件）
+/_*.py
+/_*.sh
+/_*.txt
 
 # Python
 __pycache__/
@@ -20,6 +26,3 @@ venv/
 .vscode/
 .idea/
 *.swp
-
-# 兼容期的老文件（可由 run.py 重新生成）
-yes.txt
