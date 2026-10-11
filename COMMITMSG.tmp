@@ -1,0 +1,50 @@
+fix: WSL 端到端测试发现的 6 个缺陷（权限/平台过滤/崩溃/静默报错）
+
+全部在真实 Docker 环境（WSL Debian 13 + Docker 26.1.5）中复现并修复。
+
+1) 容器以非 root 运行但挂载目录属 root -> Web 模式完全起不来
+   现象：PermissionError: [Errno 13] Permission denied: '/app/config/config.tmp'
+   成因：deploy.sh / onekey.sh 均以 root 创建 config/、results/，而 Dockerfile 用
+   USER optimizer(10001)，挂载后非 root 无法写入。
+   修复：Dockerfile 去掉 USER 指令；入口以 root 启动，先修正挂载目录归属，
+   再用 setpriv 降权执行程序；无法 chown 时给出可操作提示。
+   验证：PID 1 的 Uid 实测为 10001，config.json 成功落盘。
+
+2) EO_PLATFORMS 在 web 模式下被完全忽略
+   现象：设 EO_PLATFORMS=eo-lt，实际扫了全部 9 个平台。
+   成因：该环境变量只在 cli.prepare_platforms 里读取，webui.build_platforms()
+   的调用点都不传 keys，于是回退到"全部平台"。
+   修复：新增 _env_platform_keys()，keys 为空时回退到 EO_PLATFORMS
+   （支持逗号与空格分隔，空值=全部）。
+   验证：生效平台与参与扫描的平台均仅 eo-lt / cft-lt。
+
+3) 抽样模式下网段文件缺失会裸崩
+   现象：sample_targets_file 直接 read_text 不存在的文件 -> FileNotFoundError。
+   ESA / CFT 默认 sample_per_24=1，必然踩到。
+   修复：先判断存在性；scan_platform 捕获后转成带指引的 ScanOutcome。
+   验证：eo/esa/cft 三平台均返回错误而非崩溃。
+
+4) 网段文件缺失的提示不具可操作性
+   修复：新增 _targets_file_hint()，按平台给出具体命令
+   （cft -> run.py ranges --source cloudfront；esa -> run.py esa-ranges；
+   eo -> git checkout -- targets/eo.txt）。
+
+5) quiet 模式把错误一起吞掉，且"全部平台失败"不上报
+   现象：run.py scan -q 遇到网段缺失只输出一个空的"第 1 轮结果"标题。
+   修复：runner 新增 log_error()，quiet 下仍输出；全部平台 error 时打印汇总块
+   并 emit error 事件。
+   验证：quiet=True 下输出 23 行，含每个平台的错误与修复命令。
+
+6) DNS 逻辑离线可测（selftest 名副其实）
+   现象：selftest 声称"离线自检"，却因 _get_zone_id 无条件调用 _sdk()，
+   在未装华为云 SDK 的环境直接失败 —— 而 SDK 是可选依赖。
+   修复：_sdk() 未装时返回后备字典（请求类用轻量 shim），DNS 业务逻辑可完整
+   离线验证；build_client() 显式抛 MissingSdkError 并给出安装指引。
+   验证：WSL（未装 SDK）下 selftest 14 项全过，假 client 走完 140 IP / 3 批次。
+
+验证汇总（全新 clone -> 构建 -> 真实运行）
+- 构建成功、容器零重启、PID 1 降权正确、config 落盘
+- Web 接口 healthz/status/vars/logs/platforms 全部正常，无令牌返回 401
+- 首页 6 个面板齐全
+- selftest（宿主无 SDK / 镜像内）均通过
+- 端到端断言全部通过

@@ -88,4 +88,59 @@ if [ -n "$EO_EXTRA_ARGS" ]; then
     set -- "$@" $EO_EXTRA_ARGS
 fi
 
+# --------------------------------------------------------------------------
+# 修正挂载目录权限后降权运行
+#
+# 问题：容器以 optimizer(10001) 运行，但宿主机的 ./config、./results 由 root 创建
+# （deploy.sh / onekey.sh 都以 root 执行），挂载进来后非 root 用户无法写入，
+# 表现为启动即崩：
+#   PermissionError: [Errno 13] Permission denied: '/app/config/config.tmp'
+#
+# 做法：入口以 root 启动 -> 只对"需要写入"的目录做归属修正 -> 用 setpriv 降权，
+# 程序本身仍以非 root 运行（保留容器安全边界）。
+# --------------------------------------------------------------------------
+APP_UID="${EO_APP_UID:-10001}"
+APP_GID="${EO_APP_GID:-10001}"
+
+fix_ownership() {
+    local dirs="/app/config /app/results /app/history /app/targets" d
+    if [ "$(id -u)" != "0" ]; then
+        # 非 root 时无法 chown，只能检测并给出可操作的提示
+        for d in $dirs; do
+            [ -d "$d" ] || continue
+            if ! touch "$d/.wtest" 2>/dev/null; then
+                echo "[entrypoint] 无法写入 $d —— 容器内以非 root 运行，但该目录不属于 UID $APP_UID。" >&2
+                echo "  请任选一种方式修复后重启：" >&2
+                echo "    sudo chown -R $APP_UID:$APP_GID $(dirname $d)/$(basename $d)" >&2
+                echo "    或在 docker-compose.yml 的 services.optimizer 下加： user: \"0:0\"" >&2
+                echo "    或删掉该挂载（配置只存在容器内，重建镜像会丢）" >&2
+                exit 1
+            fi
+            rm -f "$d/.wtest"
+        done
+        return 0
+    fi
+
+    # root：统一归属，避免宿主 root 目录导致写入失败
+    for d in $dirs; do
+        [ -d "$d" ] || continue
+        if [ -n "$(find "$d" ! -uid "$APP_UID" -print -quit 2>/dev/null)" ]; then
+            chown -R "$APP_UID:$APP_GID" "$d" 2>/dev/null || true
+        fi
+        chmod u+rwx "$d" 2>/dev/null || true
+    done
+    # /app 下可能被挂载覆盖的其它可写位置
+    for d in /app/config /app/results; do
+        [ -d "$d" ] && chmod 700 "$d" 2>/dev/null || true
+    done
+    return 0
+}
+
+fix_ownership
+
+# 降权执行（以 root 启动时）；已经是非 root 则直接 exec
+if [ "$(id -u)" = "0" ] && command -v setpriv >/dev/null 2>&1; then
+    exec setpriv --reuid="$APP_UID" --regid="$APP_GID" --clear-groups python run.py "$@"
+fi
+
 exec python run.py "$@"

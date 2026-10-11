@@ -248,7 +248,13 @@ def sample_targets_file(path: Path, per_24: int, log: Callable[[str], None] | No
 
     对 targets/esa.txt 这种 2000+ 个网段、上千万地址的文件，
     这个函数比先 load_targets 再 sample_targets 快一个数量级、也省内存。
+
+    文件不存在时抛 FileNotFoundError，由调用方转成带指引的扫描错误
+    （ESA / CFT 默认走抽样，这条路径很容易被触发，不能裸崩）。
     """
+    if not path.exists():
+        raise FileNotFoundError(f"网段文件不存在: {path}")
+
     seen: set[str] = set()
     result: list[str] = []
     for raw in path.read_text(encoding="utf-8-sig").splitlines():
@@ -662,6 +668,9 @@ def sample_platform_targets(platform: Platform, targets: Sequence[str] | None = 
       1. deep_scan 且上一轮有结果 -> 以命中的 /24 为范围全量展开；
       2. sample_per_24 > 0      -> 按网段抽样（不会物化全部 IP）；
       3. 否则返回 None          -> 走全量展开（只适合小网段）。
+
+    网段文件不存在时抛 FileNotFoundError，由 scan_platform 转成带修复指引的错误，
+    避免抽样路径（ESA / CFT 默认）直接裸崩。
     """
     sample = getattr(platform, "sample_per_24", 0) or 0
     deep = bool(getattr(platform, "deep_scan", False))
@@ -694,6 +703,26 @@ def sample_platform_targets(platform: Platform, targets: Sequence[str] | None = 
     return None
 
 
+def _targets_file_hint(platform) -> str:
+    """网段文件缺失时给出可操作的修复指引。"""
+    key = (platform.key or "").split("-")[0].lower()
+    if key == "cft":
+        return ("CloudFront 网段可用以下命令生成：\n"
+                "    python run.py ranges --source cloudfront --output targets/cft.txt\n"
+                "  （Docker：docker compose run --rm optimizer ranges "
+                "--source cloudfront --output targets/cft.txt）")
+    if key == "esa":
+        return ("ESA 网段可用以下命令生成（从 BGP 公告前缀发现并剔除中国大陆）：\n"
+                "    python run.py esa-ranges --output targets/esa.txt\n"
+                "  （Docker：docker compose run --rm optimizer esa-ranges --output targets/esa.txt）")
+    if key == "eo":
+        return ("EdgeOne 网段需要自行准备（腾讯云未公开完整列表），"
+                "格式为每行一个 CIDR 或单个 IP：\n"
+                "    targets/eo.txt\n"
+                "  仓库已自带一份，若丢失可从 git 恢复：git checkout -- targets/eo.txt")
+    return "请检查平台配置里的 targets_file，或补齐该网段文件后重试。"
+
+
 def scan_platform(
     platform: Platform,
     targets: Sequence[str] | None = None,
@@ -717,13 +746,23 @@ def scan_platform(
     started = time.perf_counter()
 
     # 先按平台设置准备目标（抽样 / 深扫都走这里），需要全量加载时再 load_targets
-    prepared = sample_platform_targets(platform, targets, log=log if not quiet else None)
+    try:
+        prepared = sample_platform_targets(platform, targets, log=log if not quiet else None)
+    except FileNotFoundError:
+        # 抽样模式下网段文件缺失：给出与全量模式一致的、可操作的错误
+        return ScanOutcome(platform, 0, [], 0, 0.0,
+                           f"网段文件不存在: {platform.targets_file or '(未配置)'}。"
+                           f"{_targets_file_hint(platform)}")
     if prepared is not None:
         targets = prepared
     elif targets is None:
         targets_path = Path(platform.targets_file)
         if not platform.targets_file or not targets_path.exists():
-            return ScanOutcome(platform, 0, [], 0, 0.0, f"网段文件不存在: {platform.targets_file}")
+            # 网段文件是配置问题（不是"没有可用节点"），必须给出可操作的指引，
+            # 否则容易被误解为该平台扫不到节点。
+            hint = _targets_file_hint(platform)
+            return ScanOutcome(platform, 0, [], 0, 0.0,
+                               f"网段文件不存在: {platform.targets_file or '(未配置)'}。{hint}")
         try:
             targets = load_targets(targets_path)
         except ValueError as exc:

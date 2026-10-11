@@ -51,7 +51,7 @@ ENV_MAP = {
 INFO_VARS = [
     ("EO_NETWORK", "本机运营商", "lt=联通 / dx=电信 / yd=移动"),
     ("EO_WEB_PORT", "Web 端口", ""),
-    ("EO_PLATFORMS", "启用的平台", "平台+运营商组合"),
+    ("EO_PLATFORMS", "启用的平台", "平台+运营商组合，逗号或空格分隔；留空=全部启用"),
     ("EO_MODE", "运行模式", "web / monitor / scan"),
     ("TZ", "时区", "影响时间窗口判断"),
     ("EO_WEB_TOKEN", "访问令牌", "敏感，仅显示是否已设置"),

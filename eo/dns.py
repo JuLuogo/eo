@@ -92,8 +92,59 @@ class DnsUpdateResult:
 # --------------------------------------------------------------------------
 # 华为云 SDK 封装
 # --------------------------------------------------------------------------
+class _RequestShim:
+    """无 SDK 时的请求对象替身：任意属性可赋值，任意关键字参数可构造。
+
+    仅在未安装华为云 SDK 时使用（例如离线自检）。
+    真正下发 DNS 必须安装 SDK，见 build_client()。
+    """
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __repr__(self) -> str:  # pragma: no cover - 便于调试
+        return f"<RequestShim {vars(self)}>"
+
+
+class MissingSdkError(RuntimeError):
+    """未安装华为云 SDK 时抛出，附带安装指引。"""
+
+
+class _FallbackExceptions:
+    """SDK 缺失时的异常替身，保证 except 子句语法有效且不会误捕真实异常。"""
+
+    class ClientRequestException(Exception):
+        error_msg = ""
+
+
+_FALLBACK_SDK = {
+    "_available": False,
+    "BasicCredentials": None,
+    "exceptions": _FallbackExceptions,
+    "DnsClient": None,
+    "DnsRegion": None,
+    "ListPublicZonesRequest": _RequestShim,
+    "ListRecordSetsRequest": _RequestShim,
+    "DeleteRecordSetRequest": _RequestShim,
+    "CreateRecordSetWithLineRequest": _RequestShim,
+    "CreateRecordSetWithLineRequestBody": _RequestShim,
+    "UpdateRecordSetRequest": _RequestShim,
+    "UpdateRecordSetReq": _RequestShim,
+}
+
+
+def sdk_available() -> bool:
+    """华为云 SDK 是否可用（只有真正下发 DNS 才需要）。"""
+    return bool(_sdk().get("_available"))
+
+
 def _sdk():
-    """延迟导入 SDK，未安装时给出明确提示。"""
+    """延迟导入 SDK。
+
+    未安装时返回后备字典（请求类由轻量 shim 代替），
+    这样 DNS 业务逻辑仍可离线自检；build_client() 会显式报错提示安装。
+    """
     try:
         from huaweicloudsdkcore.auth.credentials import BasicCredentials
         from huaweicloudsdkcore.exceptions import exceptions
@@ -108,12 +159,12 @@ def _sdk():
             UpdateRecordSetRequest,
         )
         from huaweicloudsdkdns.v2.region.dns_region import DnsRegion
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "缺少华为云 SDK，请先安装：pip install huaweicloudsdkcore huaweicloudsdkdns"
-        ) from exc
+    except ImportError:
+        # 未安装 SDK：返回后备实现，保证离线自检可用
+        return dict(_FALLBACK_SDK)
 
     return {
+        "_available": True,
         "BasicCredentials": BasicCredentials,
         "exceptions": exceptions,
         "DnsClient": DnsClient,
@@ -129,8 +180,15 @@ def _sdk():
 
 
 def build_client(target: DnsTarget):
-    """按配置创建华为云 DNS 客户端。"""
+    """按配置创建华为云 DNS 客户端（需要已安装并配置华为云 SDK）。"""
     sdk = _sdk()
+    if not sdk.get("_available"):
+        raise MissingSdkError(
+            "缺少华为云 SDK，无法下发 DNS。请先安装：\n"
+            "    pip install huaweicloudsdkcore huaweicloudsdkdns\n"
+            "  （Docker 镜像已内置；本地调试可用 --no-dns 跳过，"
+            "或只做预览：docker compose run --rm optimizer dns-check -p eo-lt）"
+        )
     if not target.access_key_id or not target.access_key_secret:
         raise RuntimeError("缺少 AccessKey，请配置 access_key_id / access_key_secret 或 HUAWEI_AK/HUAWEI_SK")
     credentials = sdk["BasicCredentials"](target.access_key_id, target.access_key_secret)

@@ -75,10 +75,13 @@ RUN python -c "import eo, pathlib; p = pathlib.Path(eo.__file__); \
 COPY targets/ ./targets/
 RUN mkdir -p results/history config && chmod +x docker-entrypoint.sh
 
-# 以非 root 运行，降低容器逃逸面
+# 以非 root 运行，降低容器逃逸面。
+# 注意：这里【故意不写 USER optimizer】—— 入口脚本需要先以 root 修正挂载目录归属，
+# 再用 setpriv 降权到该用户执行。宿主机 ./config、./results 通常属 root
+# （deploy.sh / onekey.sh 都以 root 运行），若直接以非 root 启动会崩溃：
+#   PermissionError: [Errno 13] Permission denied: '/app/config/config.tmp'
 RUN useradd --create-home --uid 10001 optimizer \
     && chown -R optimizer:optimizer /app
-USER optimizer
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

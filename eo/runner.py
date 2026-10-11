@@ -112,6 +112,15 @@ def run_once(
             safe_log(message)
         emit({"type": "log", "line": message})
 
+    def log_error(message: str = "") -> None:
+        """错误必须可见：quiet 模式下也输出。
+
+        -q 只应抑制进度类噪音，不应把「网段文件不存在」这类配置错误一起吞掉，
+        否则用户只看到一个空的结果标题，无从排查。
+        """
+        safe_log(message)
+        emit({"type": "log", "line": message, "level": "error"})
+
     platforms = config.apply_to(platforms)
     targets = None
     if load_targets_fn is not None:
@@ -201,7 +210,7 @@ def run_once(
 
         suspended = _is_suspicious(outcome)
         if outcome.error:
-            log(f"  ⚠ {outcome.error}")
+            log_error(f"  ⚠ {outcome.error}")
         elif len(outcome.passed) < MIN_IPS_WARN:
             log(f"  ⚠ 可用节点仅 {len(outcome.passed)} 个，低于警戒值 {MIN_IPS_WARN}")
         elif suspended:
@@ -242,6 +251,20 @@ def run_once(
         Path(config.write_json).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                                            encoding="utf-8")
         log(f"JSON 汇总 -> {config.write_json}")
+
+    # 全部平台都失败时，这是配置问题（如网段文件缺失），必须显式报错。
+    # 否则日志里只有一行 ⚠，容易被误解为"该平台扫不到可用节点"。
+    if results and all(o.error for o, _ in results):
+        log_error("")
+        log_error("=" * 62)
+        log_error(f"✗ 本轮全部 {len(results)} 个平台均扫描失败 "
+                  f"—— 这是配置问题，不是「没有可用节点」")
+        for outcome, _ in results:
+            log_error(f"  - {outcome.platform.key}: {outcome.error}")
+        log_error("  请按上面的提示补齐网段文件后重试（run.py list 可查看各平台期望的文件）")
+        log_error("=" * 62)
+        emit({"type": "error", "scope": "all-platforms-failed",
+              "errors": {o.platform.key: o.error for o, _ in results}})
 
     # DNS 下发
     if config.dns_mode != "none" and not stop_event.is_set():

@@ -116,9 +116,26 @@ class OptimizerService:
         self.logs.append(line, level=level)
 
     # ---- 平台构造 ----
+    def _env_platform_keys(self) -> list[str]:
+        """读取 EO_PLATFORMS 环境变量（web 模式下同样生效）。
+
+        支持逗号或空格分隔，例如 "eo-lt,esa-lt" 或 "eo-lt esa-lt"。
+        空值表示不过滤（跑全部已启用平台）。
+        """
+        raw = os.environ.get("EO_PLATFORMS", "").strip()
+        if not raw:
+            return []
+        return [k.strip() for k in raw.replace(",", " ").split() if k.strip()]
+
     def build_platforms(self, keys: list[str] | None = None) -> list[Platform]:
-        """把代码里的平台定义与网页上的覆盖配置合并。"""
+        """把代码里的平台定义与网页上的覆盖配置合并。
+
+        keys 为空时回退到 EO_PLATFORMS 环境变量（容器部署常用），
+        两者都没有则返回全部平台。
+        """
         cfg = self.store.get()
+        if not keys:
+            keys = self._env_platform_keys()
         result: list[Platform] = []
 
         for key, base in PLATFORMS.items():
