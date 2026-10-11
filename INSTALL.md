@@ -297,6 +297,24 @@ docker compose logs -f          # 启动日志里有访问地址和令牌
 ./docker-setup.sh --up          # 配置 + 构建 + 启动
 ```
 
+> **遇到 `./docker-setup.sh: Permission denied`？**（某些 git 配置会忽略文件权限位）
+>
+> ```bash
+> chmod +x *.sh                 # 或直接用 sh 运行：sh docker-setup.sh
+> ```
+>
+> **遇到 `env file /opt/edge-optimizer/.env not found`？** 说明上一步没跑成功，
+> 先生成配置再构建：
+>
+> ```bash
+> cp .env.example .env
+> vi .env                       # 至少改 EO_NETWORK=lt（或 dx/yd）
+> docker compose up -d --build
+> ```
+>
+> 仓库里这几个脚本已标记为可执行（`100755`），正常 `git clone` 出来就能直接运行；
+> 若你的环境忽略了权限位，用上面的 `sh` 方式最省事。
+
 **不想用配置脚本，纯手工**：
 
 ```bash

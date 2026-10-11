@@ -74,6 +74,8 @@ Docker 卸载、手动彻底清理）。
 | `ensurepip is not available` / `Failing command: .venv/bin/python3` | Debian/Ubuntu 缺 `python3-venv`。脚本会自动装，失败就手动：`sudo apt install -y python3.13-venv`（版本号换成 `python3 -V` 显示的） |
 | 反复提示 `Username for 'https://gitee.com'` | 仓库是公开的，不需要账号。是服务器上存了过期凭据，清掉即可：`git config --global --unset credential.helper && rm -f ~/.git-credentials` |
 | `ConnectionResetError` / `Connection broken`（下载依赖时） | 境内访问 PyPI 被重置。脚本会自动换清华/阿里云/腾讯云/中科大镜像重试；全失败也不影响优选（只影响自动下发 DNS）。可加 `--no-dns` 直接跳过 |
+| `./docker-setup.sh: Permission denied` | 文件权限位没带出来。`chmod +x *.sh`，或直接 `sh docker-setup.sh` |
+| `env file .../.env not found` | 还没生成配置。先 `cp .env.example .env` 并改 `EO_NETWORK=lt`（或 dx/yd） |
 | 拉取失败 | 脚本会自动改用压缩包下载；也可手动：`curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz \| tar xz --strip-components=1` |
 
 更多见 [INSTALL.md 常见问题](INSTALL.md)。
