@@ -1,0 +1,17 @@
+fix: 仓库内脚本缺少可执行位（./docker-setup.sh 报 Permission denied）
+
+用户 git clone 后执行 ./docker-setup.sh 报：
+  -bash: ./docker-setup.sh: Permission denied
+
+根因：这几个 .sh 是在 Windows 上提交的，git index 里记录的模式是 100644，
+clone 到 Linux 后没有可执行位。
+
+修复：
+- 用 git update-index --chmod=+x 把 deploy.sh / install.sh / docker-setup.sh /
+  docker-entrypoint.sh 在仓库内标记为 100755，以后 clone 出来即可直接执行
+
+另外：
+- docker-compose.yml 的 env_file 改为 required: false，.env 不存在时不再直接报错
+  （之前用户没跑成 docker-setup.sh，导致 compose 因缺少 .env 立刻失败）
+- INSTALL.md / README 补充：若仍遇到 Permission denied，可用
+  sh docker-setup.sh 或 chmod +x *.sh；也可先 cp .env.example .env 再 compose up

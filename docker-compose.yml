@@ -25,7 +25,10 @@ services:
     container_name: edge-optimizer
     restart: unless-stopped
     env_file:
-      - .env                      # 放密钥/运营商/端口，别提交到仓库
+      # .env 由 ./docker-setup.sh 生成（或 cp .env.example .env）
+      # required: false 让它缺失时也不报错，改用下面的默认值启动
+      - path: .env
+        required: false
     environment:
       TZ: ${TZ:-Asia/Shanghai}    # 时间窗口与日志时间按此时区
       EO_MODE: web                # web=带管理页面；monitor=纯后台循环；scan=跑一次
