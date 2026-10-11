@@ -1,0 +1,120 @@
+#!/bin/sh
+# 边缘节点优选 —— 一键安装引导脚本
+#
+# 用法一（推荐，服务器上直接跑，不需要先 clone）：
+#   curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sh
+#
+# 用法二（已 clone 到本地）：
+#   ./install.sh
+#
+# 用法三（指定目录 / 分支 / 仓库）：
+#   REPO=https://gitee.com/peroe/eo.git DIR=/opt/eo BRANCH=main ./install.sh
+#
+# 脚本会：检查依赖 -> 拉取代码 -> 建立虚拟环境 -> 安装 Python 包
+#         -> 调用 deploy.sh install（交互式问运营商和端口）-> 打印后续步骤
+#
+# 用 POSIX sh 编写，Ubuntu/Debian/CentOS/Alpine 都能直接跑。
+set -eu
+
+REPO="${REPO:-https://gitee.com/peroe/eo.git}"
+BRANCH="${BRANCH:-main}"
+DIR="${DIR:-/opt/edge-optimizer}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+say()  { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# --------------------------------------------------------------------------
+# 1. 依赖检查
+# --------------------------------------------------------------------------
+say "检查系统依赖…"
+
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    die "找不到 $PYTHON_BIN，请先安装 Python 3.10+：
+    Ubuntu/Debian : sudo apt update && sudo apt install -y python3 python3-venv python3-pip curl git
+    CentOS/RHEL   : sudo yum install -y python3 python3-pip curl git
+    Alpine        : sudo apk add python3 py3-pip curl git"
+fi
+
+"$PYTHON_BIN" - <<'PY' || die "Python 版本过低，需要 3.10 及以上"
+import sys
+sys.exit(0 if sys.version_info >= (3, 10) else 1)
+PY
+say "Python: $("$PYTHON_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+
+command -v curl >/dev/null 2>&1 || die "缺少 curl：
+    Ubuntu/Debian : sudo apt install -y curl
+    CentOS/RHEL   : sudo yum install -y curl
+    Alpine        : sudo apk add curl"
+
+if command -v apt-get >/dev/null 2>&1 && ! "$PYTHON_BIN" -c 'import venv' >/dev/null 2>&1; then
+    warn "缺少 venv 模块，尝试安装 python3-venv…"
+    apt-get install -y python3-venv >/dev/null 2>&1 || true
+fi
+
+# --------------------------------------------------------------------------
+# 2. 获取代码
+# --------------------------------------------------------------------------
+if [ -f "./run.py" ] && [ -f "./deploy.sh" ]; then
+    say "当前目录已是项目根目录，跳过拉取"
+    TARGET_DIR="$(pwd)"
+else
+    command -v git >/dev/null 2>&1 || die "需要 git 来拉取代码，请先安装 git"
+    if [ -d "$DIR/.git" ]; then
+        say "目录已存在，执行更新：$DIR"
+        git -C "$DIR" fetch --quiet origin "$BRANCH"
+        git -C "$DIR" checkout --quiet "$BRANCH"
+        git -C "$DIR" pull --quiet origin "$BRANCH" || warn "更新失败，继续用当前版本"
+    else
+        say "拉取代码到 $DIR"
+        mkdir -p "$(dirname "$DIR")"
+        git clone --quiet --branch "$BRANCH" "$REPO" "$DIR" \
+            || die "拉取失败，请检查仓库地址或网络：$REPO"
+    fi
+    TARGET_DIR="$DIR"
+fi
+
+cd "$TARGET_DIR"
+say "项目目录：$TARGET_DIR"
+
+# --------------------------------------------------------------------------
+# 3. 交给 deploy.sh 完成安装与配置
+# --------------------------------------------------------------------------
+if [ ! -f "./deploy.sh" ]; then
+    die "在 $TARGET_DIR 里找不到 deploy.sh，仓库可能不完整"
+fi
+chmod +x ./deploy.sh 2>/dev/null || true
+
+if [ "$(id -u)" = "0" ]; then
+    say "以 root 运行，开始安装（会询问运营商与端口）…"
+    ./deploy.sh install "$@"
+else
+    if command -v sudo >/dev/null 2>&1; then
+        say "需要 root 权限写 systemd 服务，改用 sudo 执行…"
+        sudo ./deploy.sh install "$@"
+    else
+        die "当前不是 root 且没有 sudo，请用 root 执行：
+    curl -fsSL $REPO/raw/$BRANCH/install.sh | sudo sh"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# 4. 收尾提示
+# --------------------------------------------------------------------------
+PORT="$(grep -E '^EO_WEB_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' \"' || true)"
+CARRIER="$(grep -E '^EO_NETWORK=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' \"' || true)"
+case "$CARRIER" in
+    lt) CARRIER_CN="联通" ;; dx) CARRIER_CN="电信" ;; yd) CARRIER_CN="移动" ;; *) CARRIER_CN="未设置" ;;
+esac
+
+printf '\n'
+say "安装完成！运营商=${CARRIER_CN}(${CARRIER:-?})  端口=${PORT:-8787}"
+printf '\n接下来三步：\n'
+printf '  1) 填密钥（下发 DNS 必需）：\n'
+printf '       cd %s && vi .env        # 填 HUAWEI_AK / HUAWEI_SK\n' "$TARGET_DIR"
+printf '  2) 体检（确认本机链路没被代理接管）：\n'
+printf '       cd %s && ./deploy.sh doctor\n' "$TARGET_DIR"
+printf '  3) 启动并查看访问地址：\n'
+printf '       cd %s && sudo ./deploy.sh start && ./deploy.sh status\n' "$TARGET_DIR"
+printf '\n'

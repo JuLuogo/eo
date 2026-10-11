@@ -20,6 +20,12 @@ from typing import Any
 
 MASK = "******"
 
+# 记录「哪些键是网页上显式设置过的」的元数据字段。
+# 关键：不能简单地「config.json 里有这个键就算网页设置过」——因为 save() 会把
+# 整个配置（含默认值）落盘，那样第一次保存任何东西之后，.env 里配的值就全被
+# 默认值盖住了。所以这里单独维护一个显式设置过的键列表。
+EXPLICIT_KEY = "_explicit"
+
 DEFAULT_CONFIG_PATH = Path(
     os.environ.get("EO_CONFIG", str(Path(__file__).resolve().parent.parent / "config" / "config.json"))
 )
@@ -177,6 +183,41 @@ class AppConfig:
         return config
 
 
+def env_file_path() -> Path:
+    """项目根目录下的 .env 路径（可用 EO_ENV_FILE 覆盖）。"""
+    override = os.environ.get("EO_ENV_FILE", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_dotenv(path: Path | None = None) -> list[str]:
+    """把项目 .env 加载进进程环境变量，返回被加载的键名列表。
+
+    为什么需要：deploy.sh 用 systemd 的 EnvironmentFile 注入变量，但
+    ``./deploy.sh run``（前台调试）、直接 ``python run.py``、以及容器里
+    挂载的 .env 都不会自动进环境。这里统一处理，保证「.env 里写的值
+    确实生效」，而不是只写了个文件却没人读。
+
+    优先级：**已存在的进程环境变量优先**（staging/CI 用真实 env 覆盖 .env 是常规做法）。
+    """
+    target = Path(path) if path else env_file_path()
+    if not target.exists():
+        return []
+
+    from .deploytool import env_parse
+
+    loaded: list[str] = []
+    for key, value in env_parse(target).items():
+        if not key or value == "":
+            continue
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+        loaded.append(key)
+    return loaded
+
+
 def env_overrides() -> dict:
     """把 EO_* 环境变量翻译成配置项。
 
@@ -215,29 +256,30 @@ class ConfigStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path or DEFAULT_CONFIG_PATH)
         self._lock = threading.RLock()
+        self.explicit: set[str] = set()      # 网页上显式设置过的字段
+        # 先把 .env 载入环境，否则「.env 里配了值却没生效」会让人很困惑
+        self.dotenv_keys = load_dotenv()
         self.config = self.load()
 
     # ---- 磁盘 ----
     def load(self) -> AppConfig:
-        env_values = env_overrides()
-        if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                config = AppConfig.from_dict(data)
-            except Exception:
-                config = AppConfig()
-        else:
-            config = AppConfig()
-
-        # 只补齐「文件里没有」的字段：网页上显式设置过的值优先于环境变量
-        raw_data = {}
+        raw_data: dict = {}
         if self.path.exists():
             try:
                 raw_data = json.loads(self.path.read_text(encoding="utf-8"))
             except Exception:
                 raw_data = {}
-        for field, value in env_values.items():
-            if field not in raw_data:
+
+        try:
+            config = AppConfig.from_dict(raw_data) if raw_data else AppConfig()
+        except Exception:
+            config = AppConfig()
+
+        self.explicit = set(raw_data.get(EXPLICIT_KEY) or [])
+
+        # 环境变量只作用于「网页上没有显式设置过」的字段
+        for field, value in env_overrides().items():
+            if field not in self.explicit:
                 setattr(config, field, value)
 
         # 访问令牌：环境变量优先，其次文件，最后自动生成
@@ -282,6 +324,7 @@ class ConfigStore:
                         "notify_always", "log_buffer", "auto_run"):
                 if key in patch and patch[key] is not None:
                     setattr(config, key, patch[key])
+                    self.explicit.add(key)
 
             for key, value in (patch.get("platforms") or {}).items():
                 if not isinstance(value, dict):
@@ -333,6 +376,8 @@ class ConfigStore:
         """
         payload = config.to_dict(mask_secrets=False)
         payload["web_token"] = config.web_token
+        # 记录哪些字段是网页显式设置过的，供下次 load 判断 env 是否该生效
+        payload[EXPLICIT_KEY] = sorted(self.explicit)
         return payload
 
     def save(self, config: AppConfig | None = None) -> None:

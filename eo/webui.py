@@ -309,6 +309,22 @@ class OptimizerService:
         return self.run_single({"dns_mode": "push", "dns_confirm": True, "no_write": True})
 
     # ---- 状态 ----
+    def vars_overview(self) -> dict:
+        """常用变量的三方对照（默认值 / .env / 网页），说明谁在生效。"""
+        from .config_store import env_file_path
+        from .varview import info_view, vars_view
+
+        env_path = env_file_path()
+        config = self.store.get()
+        return {
+            "vars": vars_view(config, env_path, self.store.path, self.store.explicit),
+            "info": info_view(env_path),
+            "env_file": str(env_path),
+            "env_exists": env_path.exists(),
+            "env_loaded": getattr(self.store, "dotenv_keys", []),
+            "config_file": str(self.store.path),
+        }
+
     def status(self) -> dict:
         cfg = self.store.get()
         platforms = []
@@ -414,6 +430,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._text(PAGE_HTML, content_type="text/html; charset=utf-8")
         elif path == "/api/config":
             self._json({"config": self.service.store.get().to_dict()})
+        elif path == "/api/vars":
+            self._json(self.service.vars_overview())
         elif path == "/api/status":
             self._json(self.service.status())
         elif path == "/api/logs":

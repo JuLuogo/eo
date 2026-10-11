@@ -100,16 +100,20 @@ def detect(ip: str = "", timeout: float = 8.0) -> dict:
 # .env 读写
 # --------------------------------------------------------------------------
 def env_parse(path: Path) -> dict[str, str]:
-    """解析 .env，自动剥掉行尾注释与引号。"""
+    """解析 .env，自动剥掉 BOM、行尾注释与引号。
+
+    用 utf-8-sig 读取：Windows 上用记事本/PowerShell 编辑过的 .env 常带 BOM，
+    若不处理，第一行的键会变成 "\\ufeffEO_RATE"，导致该变量静默失效。
+    """
     result: dict[str, str] = {}
     if not path.exists():
         return result
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        line = raw.strip().lstrip("\ufeff")
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key = key.strip()
+        key = key.strip().lstrip("\ufeff")
         value = value.strip()
         # 先处理 "KEY=   # 只是说明" 这种「空值 + 行尾说明」的写法：
         # 此时 # 并不是注释分隔符，而是紧跟等号，应当视为空值。

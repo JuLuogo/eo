@@ -96,7 +96,76 @@ PAGE_HTML = r"""<!DOCTYPE html>
   <!-- 左栏：配置 -->
   <div style="display:grid;gap:16px">
     <section class="card">
-      <h2>运行参数</h2>
+      <h2>常用变量 <span class="pill" id="v-src">—</span>
+        <span class="grow"></span>
+        <span class="pill" id="v-envfile">—</span>
+      </h2>
+      <div class="body">
+        <div class="hint" style="margin-bottom:12px">
+          这里列出的变量既可以写在 <code>.env</code> 里，也可以直接在下面改。
+          生效规则：<b>网页改过就用网页的值</b>，否则用 <code>.env</code> 的值，都没有才用默认值。
+          「来源」列会告诉你当前到底哪个在生效。
+        </div>
+        <table id="vars-table">
+          <tr><th>变量</th><th>当前生效值</th><th>来源</th><th>在 .env 里</th><th>在网页里</th></tr>
+        </table>
+        <div class="grid3" style="margin-top:14px">
+          <div class="field">
+            <label>并发连接上限（连接/秒，全平台合计）</label>
+            <input type="number" id="v-rate" min="0" step="10">
+          </div>
+          <div class="field">
+            <label>轮询间隔（秒）</label>
+            <input type="number" id="v-interval" min="60" step="30">
+          </div>
+          <div class="field">
+            <label>时间窗口（留空=全天）</label>
+            <input type="text" id="v-window" placeholder="00:00-07:00">
+          </div>
+          <div class="field">
+            <label>单平台并发数</label>
+            <input type="number" id="v-workers" min="1" step="10">
+          </div>
+          <div class="field">
+            <label>探测超时（秒）</label>
+            <input type="number" id="v-timeout" min="1" step="0.5">
+          </div>
+          <div class="field">
+            <label>失败重试次数</label>
+            <input type="number" id="v-retries" min="0" step="1">
+          </div>
+          <div class="field">
+            <label>日志保留条数</label>
+            <input type="number" id="v-logbuf" min="50" step="50">
+          </div>
+          <div class="field">
+            <label>DNS 下发模式</label>
+            <select id="v-dnsmode">
+              <option value="none">关闭</option>
+              <option value="dry-run">预览</option>
+              <option value="push">执行</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>通知 Webhook</label>
+            <input type="text" id="v-webhook" placeholder="可选">
+          </div>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button class="primary" id="btn-vsave">保存常用变量</button>
+          <button id="btn-vreload">重新读取</button>
+          <span class="hint" style="margin:0">保存后下一轮扫描即生效</span>
+        </div>
+
+        <details style="margin-top:14px">
+          <summary>部署信息（只读，来自 .env 与环境变量）</summary>
+          <div class="inner"><table id="info-table"></table></div>
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>运行参数（细分项）</h2>
       <div class="body">
         <div class="grid2">
           <div class="field">
@@ -282,6 +351,73 @@ async function pollLogs(){
     if (data.capacity) document.getElementById('p-logcount').textContent =
       document.getElementById('log').childElementCount + ' / ' + data.capacity;
   }catch(e){}
+}
+
+/* ---------------- 常用变量面板 ---------------- */
+function srcTag(source){
+  const map = {web: ['网页设置', 'ok'], env: ['.env', ''], default: ['默认值', 'off']};
+  const [label, cls] = map[source] || ['?', ''];
+  return '<span class="tag ' + cls + '">' + label + '</span>';
+}
+function fmtVal(v){
+  if (v === '' || v === null || v === undefined) return '<span style="color:#4b5563">—</span>';
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  return esc(String(v));
+}
+
+async function loadVars(){
+  const data = await api('/api/vars');
+  const tbody = document.getElementById('vars-table');
+  let html = '<tr><th>变量</th><th>当前生效值</th><th>来源</th><th>在 .env 里</th><th>在网页里</th></tr>';
+  data.vars.forEach(v=>{
+    html += '<tr>' +
+      '<td><b>' + esc(v.label) + '</b><br><span class="hint">' + esc(v.key) +
+        (v.env_key ? ' · ' + esc(v.env_key) : '') + '</span></td>' +
+      '<td><b>' + fmtVal(v.effective) + '</b></td>' +
+      '<td>' + srcTag(v.source) + '</td>' +
+      '<td>' + fmtVal(v.env_value) + '</td>' +
+      '<td>' + fmtVal(v.web_value) + '</td>' +
+      '</tr>';
+  });
+  tbody.innerHTML = html;
+
+  // 部署信息
+  const info = document.getElementById('info-table');
+  info.innerHTML = '<tr><th>项目</th><th>值</th></tr>' + (data.info||[]).map(r =>
+    '<tr><td>' + esc(r.label) + ' <span class="hint">' + esc(r.key) + '</span></td><td>' +
+    esc(r.value || '—') + '</td></tr>').join('');
+
+  document.getElementById('v-envfile').textContent = data.env_exists ? '.env 已加载' : '无 .env';
+  document.getElementById('v-src').textContent =
+    '网页优先 / 共 ' + (data.vars||[]).length + ' 项';
+
+  // 表单填充（用生效值）
+  const byKey = {};
+  (data.vars||[]).forEach(v => byKey[v.key] = v.effective);
+  const set = (id, key) => { const el = document.getElementById(id); if (el) el.value = byKey[key] ?? ''; };
+  set('v-rate','rate'); set('v-interval','interval'); set('v-window','window');
+  set('v-workers','workers'); set('v-timeout','timeout'); set('v-retries','retries');
+  set('v-logbuf','log_buffer'); set('v-webhook','webhook');
+  const dm = document.getElementById('v-dnsmode');
+  if (dm) dm.value = byKey['dns_mode'] || 'none';
+}
+
+async function saveVars(){
+  const patch = {
+    rate: Number(document.getElementById('v-rate').value),
+    interval: Number(document.getElementById('v-interval').value),
+    window: document.getElementById('v-window').value.trim(),
+    workers: Number(document.getElementById('v-workers').value),
+    timeout: Number(document.getElementById('v-timeout').value),
+    retries: Number(document.getElementById('v-retries').value),
+    log_buffer: Number(document.getElementById('v-logbuf').value),
+    dns_mode: document.getElementById('v-dnsmode').value,
+    webhook: document.getElementById('v-webhook').value.trim(),
+  };
+  const data = await post('/api/config', patch);
+  renderConfig(data.config);
+  await loadVars();
+  toast('常用变量已保存', 'ok');
 }
 
 /* ---------------- 状态 / 进度 ---------------- */
@@ -522,6 +658,8 @@ async function saveAll(){
 
 function bind(){
   document.getElementById('btn-save').onclick = saveAll;
+  document.getElementById('btn-vsave').onclick = saveVars;
+  document.getElementById('btn-vreload').onclick = () => { loadVars().then(()=>toast('已重新读取')); };
   document.getElementById('btn-run').onclick = async ()=>{
     const r = await post('/api/control/start'); toast(r.message, r.ok?'ok':'err'); refresh(); };
   document.getElementById('btn-stop').onclick = async ()=>{
@@ -546,6 +684,7 @@ function bind(){
 async function loadAll(){
   const [cfg, st] = await Promise.all([api('/api/config'), api('/api/status')]);
   renderConfig(cfg.config); renderStatus(st);
+  await loadVars();
 }
 async function refresh(){
   try{ renderStatus(await api('/api/status')); }catch(e){}
