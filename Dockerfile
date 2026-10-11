@@ -61,8 +61,15 @@ RUN if [ "$INSTALL_DNS_SDK" = "1" ]; then \
 WORKDIR /app
 
 # 代码
+# 注意：千万不要把 eo.py 之类的同名文件放进镜像根目录 —— 它会遮蔽 eo/ 包，
+# 导致 "No module named 'eo.core'; 'eo' is not a package"
 COPY eo/ ./eo/
-COPY run.py eo.py updatedns.py README.md INSTALL.md docker-entrypoint.sh ./
+COPY run.py updatedns.py README.md INSTALL.md docker-entrypoint.sh ./
+
+# 自检：确认 eo 是包（而不是被同名文件遮蔽），构建阶段就拦住这类问题
+RUN python -c "import eo, pathlib; p = pathlib.Path(eo.__file__); \
+    assert p.name == '__init__.py', f'eo 被 {p} 遮蔽，请检查根目录是否有同名 .py 文件'; \
+    from eo.core import scan_platform; print('镜像自检通过：eo 包可正常导入')"
 
 # 网段与结果目录（实际部署时建议用 volume 挂载，避免重建镜像丢数据）
 COPY targets/ ./targets/

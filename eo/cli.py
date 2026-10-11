@@ -447,6 +447,22 @@ def cmd_selftest(args) -> int:
 
     banner("离线自检")
 
+    # --- 包结构完整性（防止根目录同名文件遮蔽 eo/ 包） ---
+    # 症状：ModuleNotFoundError: No module named 'eo.core'; 'eo' is not a package
+    # 成因：项目根目录存在 eo.py 之类的同名文件，Python 会优先导入它而不是 eo/ 包。
+    # 这个坑在 Docker 镜像里尤其致命（容器会反复重启），所以放进自检。
+    try:
+        import pathlib
+        import eo as _eo_pkg
+        _pkg_file = pathlib.Path(_eo_pkg.__file__)
+        check("eo 是包（未被同名文件遮蔽）", _pkg_file.name == "__init__.py",
+              f"实际解析到 {_pkg_file}")
+        _shadows = [p.name for p in _pkg_file.parent.glob("eo.py")]
+        check("根目录无 eo.py 冲突文件", not _shadows,
+              f"发现 {_shadows}，请删除：它会遮蔽 eo/ 包")
+    except Exception as exc:  # pragma: no cover - 仅在环境异常时触发
+        check("eo 包可导入", False, f"{type(exc).__name__}: {exc}")
+
     # --- 网段解析 ---
     check("CIDR 解析", len(expand_targets("10.0.0.0/24")) == 254)
     check("单 IP 解析", expand_targets("1.2.3.4") == ["1.2.3.4"])

@@ -19,6 +19,32 @@
 # 会持久化到 config/config.json，因此这里的相关环境变量只作为首次部署的默认值。
 set -e
 
+# --------------------------------------------------------------------------
+# 启动自检：确认 eo 包在镜像里（而不是只有一个同名文件）
+# 症状：ModuleNotFoundError: No module named 'eo.core'; 'eo' is not a package
+# 成因：构建时 eo/ 目录没被 COPY 进镜像（常见于 .dockerignore 把它排除了）。
+# 这里提前给出人话报错，而不是刷屏的 traceback。
+# --------------------------------------------------------------------------
+if ! python -c '
+import sys, pathlib
+try:
+    import eo
+except Exception as exc:
+    print(f"[entrypoint] 无法导入 eo 包：{type(exc).__name__}: {exc}", file=sys.stderr)
+    sys.exit(1)
+p = pathlib.Path(eo.__file__)
+if p.name != "__init__.py":
+    print(f"[entrypoint] eo 被 {p} 遮蔽（不是包），镜像构建有误", file=sys.stderr)
+    sys.exit(1)
+' 2>/dev/null; then
+    echo "[entrypoint] 启动自检失败：镜像里的 eo 包不完整。" >&2
+    echo "  请重新构建镜像（代码里已加构建期与运行期检查）：" >&2
+    echo "    cd /opt/edge-optimizer && docker compose up -d --build --force-recreate" >&2
+    echo "  若仍失败，请执行并反馈输出：" >&2
+    echo "    docker run --rm --entrypoint sh edge-optimizer:latest -c 'ls -la /app && ls -la /app/eo'" >&2
+    exit 1
+fi
+
 MODE="${EO_MODE:-web}"
 
 case "$MODE" in

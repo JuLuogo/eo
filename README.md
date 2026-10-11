@@ -1,6 +1,6 @@
 # 多平台边缘节点优选工具
 
-在原 `eo.py` 的基础上通用化：**一次运行可同时为 EO / ESA / CFT 等多个平台筛选可用节点**，
+在原单平台脚本的基础上通用化：**一次运行可同时为 EO / ESA / CFT 等多个平台筛选可用节点**，
 并可直接把结果批量下发到各自的 DNS 记录。支持按运营商（联通/电信/移动）分开优选。
 
 ---
@@ -121,7 +121,6 @@ eo.txt(网段) ──ping+curl──> yes.txt(可用IP) ──华为云API──
 ```
 eo/                                    ← 项目根目录
 ├── run.py                  ← 统一入口（web / scan / monitor / test / list / dns-check / doctor / selftest / ranges）
-├── eo.py                   ← 兼容入口，老命令 python eo.py 行为不变（写 yes.txt）
 ├── updatedns.py            ← DNS 下发入口（兼容老用法，支持按平台）
 ├── eo/                     ← 核心包
 │   ├── core.py             平台无关引擎：网段展开 / ping / curl 探测 / 并发扫描 / 落盘 / 链路自检
