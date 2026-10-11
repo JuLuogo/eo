@@ -2,7 +2,7 @@
 # 边缘节点优选 —— 一键安装引导脚本
 #
 # 用法一（推荐，服务器上直接跑，不需要先 clone）：
-#   curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+#   curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
 #
 # 用法二（已 clone 到本地）：
 #   ./install.sh
@@ -20,13 +20,14 @@
 # 用 POSIX sh 编写，Ubuntu/Debian/CentOS/Alpine 都能直接跑。
 set -eu
 
-REPO="${REPO:-https://gitee.com/peroe/eo.git}"
+REPO="${REPO:-https://github.com/JuLuogo/eo.git}"
 BRANCH="${BRANCH:-main}"
 DIR="${DIR:-/opt/edge-optimizer}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-# 私有仓库时可用：GITEE_USER + GITEE_TOKEN
-GITEE_USER="${GITEE_USER:-}"
-GITEE_TOKEN="${GITEE_TOKEN:-}"
+# 私有仓库时可用：GITHUB_USER + GITHUB_TOKEN（兼容旧的 GITEE_USER / GITEE_TOKEN）
+GIT_USER="${GITHUB_USER:-${GITEE_USER:-}}"
+GIT_TOKEN="${GITHUB_TOKEN:-${GITEE_TOKEN:-}}"
+REPO_HOST="${REPO_HOST:-github.com}"
 
 say()  { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -172,15 +173,18 @@ fi
 # 2. 获取代码
 # --------------------------------------------------------------------------
 # 组装拉取地址：默认公开仓库直接匿名拉取，并禁用交互式认证询问。
-# 关键：很多服务器上存着过期的 Gitee 凭据，git 会因此弹出「Username for ...」
+# 关键：很多服务器上存着过期的 git 凭据，git 会因此弹出「Username for ...」
 # 反复失败。这里显式关掉询问：匿名能拉就拉，拉不了就给出明确指引。
 build_clone_url() {
-    if [ -n "$GITEE_TOKEN" ]; then
-        if [ -n "$GITEE_USER" ]; then
-            echo "https://${GITEE_USER}:${GITEE_TOKEN}@gitee.com/peroe/eo.git"
-        else
-            echo "https://${GITEE_TOKEN}@gitee.com/peroe/eo.git"
-        fi
+    # 有令牌时把凭据内联到地址里（仅用于本次 clone，不落盘）
+    if [ -n "$GIT_TOKEN" ]; then
+        case "$REPO" in
+            https://*)
+                # 在 https:// 之后插入 user:token@
+                echo "$REPO" | sed "s|https://|https://${GIT_USER:-x-access-token}:${GIT_TOKEN}@|"
+                ;;
+            *) echo "$REPO" ;;
+        esac
     else
         echo "$REPO"
     fi
@@ -209,21 +213,21 @@ clone_hint() {
 
 拉取失败。仓库当前是【公开】的，正常应该能匿名拉取，请按顺序排查：
 
-  1) 服务器上存着过期的 Gitee 凭据（最常见）
+  1) 服务器上存着过期的 git 凭据（最常见）
      安装脚本已经禁用凭据询问，但如果你的 git 版本仍弹窗，请清掉旧凭据：
        git config --global --unset credential.helper
        rm -f ~/.git-credentials
        git config --global --list | grep -i credential     # 确认已清干净
 
-  2) 网络到 Gitee 不通（尤其是海外机器）
-     先测：curl -sI https://gitee.com | head -1
+  2) 网络到 GitHub 不通（尤其是境内机器）
+     先测：curl -sI https://github.com | head -1
 
   3) 不想折腾 git，直接用压缩包
        见下面「下载压缩包」给出的两条命令，或重跑本脚本，它会自动尝试。
 
   4) 仓库若已改为私有，用令牌拉取
        GITEE_USER=你的用户名 GITEE_TOKEN=你的私人令牌 \
-       curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+       curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
 
 EOF
 }
@@ -238,7 +242,7 @@ fetch_via_archive() {
         return 1
     fi
     mkdir -p "$dest"
-    # Gitee 归档解压后是 <仓库名-分支>/ 一层目录，用 --strip-components=1 摊平
+    # 归档解压后是 <仓库名-分支>/ 一层目录，用 --strip-components=1 摊平
     if ! tar xzf "$tmp/archive.tar.gz" -C "$dest" --strip-components=1; then
         rm -rf "$tmp"
         return 1
@@ -262,14 +266,14 @@ else
     Alpine        : sudo apk add git
 或者用压缩包方式（不需要 git）：
     mkdir -p $DIR && cd $DIR
-    curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz | tar xz --strip-components=1
+    curl -fL https://github.com/JuLuogo/eo/archive/refs/heads/main.tar.gz | tar xz --strip-components=1
     sudo ./install.sh"
     fi
     CLONE_URL="$(build_clone_url)"
 
     if [ -d "$DIR/.git" ]; then
         say "目录已存在，执行更新：$DIR"
-        # 加超时：部分服务器到 Gitee 的连接会长时间挂住
+        # 加超时：部分服务器到 GitHub 的连接会长时间挂住
         if ! run_with_timeout 60 git_quiet -C "$DIR" fetch origin "$BRANCH" 2>/dev/null; then
             warn "fetch 失败或超时（网络/权限问题），继续使用当前版本"
         else
@@ -285,7 +289,7 @@ else
         mkdir -p "$(dirname "$DIR")"
         if ! git_quiet clone --branch "$BRANCH" "$CLONE_URL" "$DIR"; then
             warn "git 拉取失败，可能是本机凭据过期或网络限制，自动改用压缩包…"
-            ARCHIVE_URL="https://gitee.com/peroe/eo/repository/archive/${BRANCH}.tar.gz"
+            ARCHIVE_URL="https://github.com/JuLuogo/eo/archive/refs/heads/${BRANCH}.tar.gz"
             if fetch_via_archive "$ARCHIVE_URL" "$DIR"; then
                 say "压缩包下载成功（这种方式不带 .git，之后升级请用 git clone）"
             else
@@ -319,7 +323,7 @@ else
         sudo ./deploy.sh install "$@"
     else
         die "当前不是 root 且没有 sudo，请用 root 执行：
-    curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh"
+    curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh"
     fi
 fi
 

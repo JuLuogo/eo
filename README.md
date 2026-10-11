@@ -10,7 +10,7 @@
 服务器上直接跑，不需要先 clone：
 
 ```bash
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
 ```
 
 会依次完成：检查依赖 → 拉取代码 → 建虚拟环境 → 装 Python 包 → 装 systemd 服务。
@@ -76,7 +76,7 @@ Docker 卸载、手动彻底清理）。
 | `ConnectionResetError` / `Connection broken`（下载依赖时） | 境内访问 PyPI 被重置。脚本会自动换清华/阿里云/腾讯云/中科大镜像重试；全失败也不影响优选（只影响自动下发 DNS）。可加 `--no-dns` 直接跳过 |
 | `./docker-setup.sh: Permission denied` | 文件权限位没带出来。`chmod +x *.sh`，或直接 `sh docker-setup.sh` |
 | `env file .../.env not found` | 还没生成配置。先 `cp .env.example .env` 并改 `EO_NETWORK=lt`（或 dx/yd） |
-| 拉取失败 | 脚本会自动改用压缩包下载；也可手动：`curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz \| tar xz --strip-components=1` |
+| 拉取失败 | 脚本会自动改用压缩包下载；也可手动：`curl -fL https://github.com/JuLuogo/eo/archive/refs/heads/main.tar.gz \| tar xz --strip-components=1` |
 
 更多见 [INSTALL.md 常见问题](INSTALL.md)。
 

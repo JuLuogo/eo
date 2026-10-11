@@ -3,7 +3,7 @@
 **一键安装（推荐）**：
 
 ```bash
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
 ```
 
 装完就能用。依赖（Python / curl / git / venv / pip 包）脚本会自己搞定，你只需要回答
@@ -27,13 +27,58 @@ curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
 
 ## 一、一键安装（推荐）
 
-服务器上直接跑，不需要先 clone：
+### 1.1 Docker 一条命令（最省事）
+
+在服务器上执行**一条命令**即可完成：拉代码 → 写配置 → 构建 → 启动 → 打印访问地址。
+
+把开头的 5 个值换成你自己的（`HUAWEI_AK` / `HUAWEI_SK` 是华为云密钥）：
 
 ```bash
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+DIR=/opt/edge-optimizer EO_NETWORK=lt EO_WEB_PORT=8787 \
+HUAWEI_AK=你的AccessKeyId HUAWEI_SK=你的AccessKeySecret \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
 ```
 
-流程与输出：
+- `EO_NETWORK`：`lt`=联通 / `dx`=电信 / `yd`=移动（留空会自动识别本机运营商）
+- `EO_WEB_PORT`：留空则按运营商取默认（lt=8787、dx=8788、yd=8789）
+- 其他可调项：`EO_RATE`（限速，默认 100）、`EO_INTERVAL`（间隔，默认 300）、
+  `EO_WINDOW`（时间窗口）、`EO_DNS_SYNC`（默认 `dry-run` 只预览不下发）
+
+执行完会打印：
+
+```
+  ==========================================================
+   运营商   : 联通 (lt)
+   端口     : 8787
+   访问地址 : http://<服务器IP>:8787/?token=xxxxxxxx
+  ==========================================================
+
+  查看日志   : cd /opt/edge-optimizer && docker compose logs -f
+```
+
+> **想用 GitHub 上预构建好的镜像**（不在本机构建，更快）：
+> 镜像由 GitHub Actions 自动构建推送到 GHCR，加 `USE_GHCR=1` 即可：
+>
+> ```bash
+> USE_GHCR=1 IMAGE=ghcr.io/julugo/eo:latest DIR=/opt/edge-optimizer \
+> EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
+> bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
+> ```
+>
+> GHCR 包默认是私有的，需要先登录（用 GitHub 私人令牌）：
+> `echo <令牌> | docker login ghcr.io -u JuLuogo --password-stdin`
+> 或在 GitHub 上把该 Package 的可见性改成 Public 后即可匿名拉取。
+
+### 1.2 裸机安装（不用 Docker）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
+```
+
+依赖（Python / curl / git / venv / pip 包）脚本会自己搞定，你只需要回答两个问题：
+**这台机器是哪个运营商**、**Web 用哪个端口**。
+
+输出示例：
 
 ```
 [install] 检查系统依赖…
@@ -54,32 +99,31 @@ Web 控制台监听端口（回车用 8787）:
 [install] 安装完成！运营商=联通(lt)  端口=8787
 ```
 
-### 可选参数
+### 1.3 可选参数
 
 ```bash
 # 跳过华为云 DNS SDK（纯优选，装得更快、不受 PyPI 网络影响）
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh -s -- --no-dns
+curl -fsSL .../install.sh | sudo sh -s -- --no-dns
 
 # 非交互批量部署
 EO_NETWORK=lt EO_WEB_PORT=8787 ./install.sh --yes
 
 # 指定安装目录 / 分支 / 仓库
-DIR=/opt/eo BRANCH=main REPO=https://gitee.com/peroe/eo.git ./install.sh
+DIR=/opt/eo BRANCH=main REPO=https://github.com/JuLuogo/eo.git ./install.sh
 
 # 私有仓库（用私人令牌）
-GITEE_USER=你的用户名 GITEE_TOKEN=你的令牌 ./install.sh
+GITEE_USER=用户名 GITEE_TOKEN=令牌 ./install.sh
 
 # 指定 pip 镜像源（境内网络建议）
 PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple ./install.sh
 ```
 
-### 已经 clone 了？
+### 1.4 已经 clone 了？
 
 ```bash
 cd /opt/edge-optimizer
 sudo ./install.sh          # 一键安装（本地版）
-# 或者只做部署那一步：
-sudo ./deploy.sh install
+sudo ./deploy.sh install   # 或者只做部署那一步
 ```
 
 ---
@@ -280,7 +324,7 @@ docker --version && docker compose version
 
 ```bash
 # 1. 拉代码
-git clone https://gitee.com/peroe/eo.git /opt/edge-optimizer
+git clone https://github.com/JuLuogo/eo.git /opt/edge-optimizer
 cd /opt/edge-optimizer
 
 # 2. 交互式生成 .env（问运营商和端口，自动识别本机运营商）
@@ -428,7 +472,7 @@ sudo apt update && sudo apt install -y python3 python3-venv python3-pip curl git
 # Alpine:      sudo apk add python3 py3-pip curl git
 
 # 2. 拉代码
-git clone https://gitee.com/peroe/eo.git /opt/edge-optimizer
+git clone https://github.com/JuLuogo/eo.git /opt/edge-optimizer
 cd /opt/edge-optimizer
 
 # 3. 虚拟环境
@@ -456,7 +500,7 @@ vi .env           # EO_NETWORK=lt/dx/yd、EO_WEB_PORT、HUAWEI_AK/SK
 
 ```bash
 # 联通机 → 选 1；电信机 → 选 2；移动机 → 选 3
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
 ```
 
 脚本会把运营商写进 `.env`（`EO_NETWORK`）并自动配好对应平台：
@@ -493,7 +537,7 @@ EO_NETWORK=dx EO_WEB_PORT=8788 ./install.sh --yes
     huaweicloudsdkcore huaweicloudsdkdns
 
 # 或者一开始就跳过
-curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh -s -- --no-dns
+curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh -s -- --no-dns
 ```
 
 **Q：报 `ensurepip is not available` / `Failing command: .../.venv/bin/python3`**
@@ -520,7 +564,7 @@ rm -f ~/.git-credentials
 
 ```bash
 mkdir -p /opt/edge-optimizer && cd /opt/edge-optimizer
-curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz | tar xz --strip-components=1
+curl -fL https://github.com/JuLuogo/eo/archive/refs/heads/main.tar.gz | tar xz --strip-components=1
 sudo ./install.sh
 ```
 
