@@ -26,3 +26,12 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# 测试/临时脚本（不要提交）
+/_*.py
+/_*.sh
+/_*.txt
+/verify_*.sh
+/run_*.sh
+/cleanup_*.sh
+*.tmp
