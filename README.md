@@ -50,15 +50,22 @@ sudo ./deploy.sh install     # 交互式配置 + 装 systemd
 ### 常用运维命令
 
 ```bash
-./deploy.sh start / stop / restart      # 启动 / 停止 / 重启
-./deploy.sh status                      # 状态 + 运营商 + 端口 + 令牌
-./deploy.sh logs                        # 跟踪日志
-./deploy.sh doctor                      # 环境体检
-./deploy.sh scan                        # 按本机运营商跑一轮优选
-./deploy.sh isp                         # 识别本机运营商
-./deploy.sh config                      # 改运营商 / 端口（自动重启）
-./deploy.sh uninstall                   # 卸载服务（保留数据）
+./deploy.sh install                  # 安装（依赖自动装，只问运营商和端口）
+./deploy.sh start / stop / restart   # 启动 / 停止 / 重启
+./deploy.sh status                   # 状态 + 运营商 + 端口 + 访问地址 + 令牌
+./deploy.sh logs                     # 实时日志（logs 200 = 最后 200 行）
+./deploy.sh logs-err                 # 只看错误日志
+./deploy.sh logs-save                # 导出全部日志到文件
+./deploy.sh doctor                   # 环境体检
+./deploy.sh scan                     # 按本机运营商跑一轮优选
+./deploy.sh isp                      # 识别本机运营商
+./deploy.sh config                   # 改运营商 / 端口（自动重启）
+./deploy.sh uninstall                # 卸载（保留配置与结果）
+sudo ./deploy.sh uninstall --purge   # 完全卸载（连配置、结果、密钥一起删）
 ```
+
+日志与卸载的完整说明见 **[INSTALL.md](INSTALL.md)**（含 `journalctl` 原始命令、
+Docker 卸载、手动彻底清理）。
 
 ### 装不动时看这里
 

@@ -33,43 +33,138 @@ warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --------------------------------------------------------------------------
-# 1. 依赖检查
+# 1. 依赖检查与自动安装
 # --------------------------------------------------------------------------
 say "检查系统依赖…"
 
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    die "找不到 $PYTHON_BIN，请先安装 Python 3.10+：
-    Ubuntu/Debian : sudo apt update && sudo apt install -y python3 python3-venv python3-pip curl git
-    CentOS/RHEL   : sudo yum install -y python3 python3-pip curl git
-    Alpine        : sudo apk add python3 py3-pip curl git"
+# 提权前缀：root 直接用，非 root 且 sudo 免密或可交互才用 sudo
+priv() {
+    if [ "$(id -u)" = "0" ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null || [ -t 0 ]; then
+            printf 'sudo'
+            return 0
+        fi
+    fi
+    return 1
+}
+
+SUDO=""
+if P="$(priv)"; then
+    SUDO="$P"
 fi
 
-"$PYTHON_BIN" - <<'PY' || die "Python 版本过低，需要 3.10 及以上"
-import sys
-sys.exit(0 if sys.version_info >= (3, 10) else 1)
-PY
+# 按发行版安装系统包；没有任何包管理器或无法提权时返回 1
+install_system_packages() {
+    [ -n "$SUDO" ] || [ "$(id -u)" = "0" ] || return 1
+    local pkgs="$*"
+    if command -v apt-get >/dev/null 2>&1; then
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        # shellcheck disable=SC2086
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs >/dev/null 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        $SUDO dnf install -y $pkgs >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        $SUDO yum install -y $pkgs >/dev/null 2>&1
+    elif command -v apk >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        $SUDO apk add --no-cache $pkgs >/dev/null 2>&1
+    elif command -v zypper >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        $SUDO zypper -n install $pkgs >/dev/null 2>&1
+    elif command -v pacman >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        $SUDO pacman -S --noconfirm $pkgs >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+pkg_names() {
+    # 各发行版包名不同，按包管理器给出对应名字（$1 = 通用名）
+    local kind="$1"
+    if command -v apt-get >/dev/null 2>&1; then
+        case "$kind" in
+            python)  echo "python3 python3-venv python3-pip" ;;
+            curl)    echo "curl" ;;
+            git)     echo "git" ;;
+        esac
+    elif command -v apk >/dev/null 2>&1; then
+        case "$kind" in
+            python)  echo "python3 py3-pip" ;;
+            curl)    echo "curl" ;;
+            git)     echo "git" ;;
+        esac
+    else
+        case "$kind" in
+            python)  echo "python3 python3-pip" ;;
+            curl)    echo "curl" ;;
+            git)     echo "git" ;;
+        esac
+    fi
+}
+
+# ---- Python ----
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    warn "没找到 $PYTHON_BIN，尝试自动安装…"
+    # shellcheck disable=SC2046
+    install_system_packages $(pkg_names python) || true
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        die "无法自动安装 Python，请手动执行：
+    Ubuntu/Debian : sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+    CentOS/RHEL   : sudo yum install -y python3 python3-pip
+    Alpine        : sudo apk add python3 py3-pip"
+    fi
+    say "Python 安装完成"
+fi
+
+if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    die "Python 版本过低（需要 3.10+，当前 $("$PYTHON_BIN" -V 2>&1)）。
+请升级 Python 后重试，或用 PYTHON_BIN=python3.11 指定其它解释器。"
+fi
 say "Python: $("$PYTHON_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
 
-command -v curl >/dev/null 2>&1 || die "缺少 curl：
+# ---- curl ----
+if ! command -v curl >/dev/null 2>&1; then
+    warn "没找到 curl，尝试自动安装…"
+    # shellcheck disable=SC2046
+    install_system_packages $(pkg_names curl) || true
+    command -v curl >/dev/null 2>&1 || die "无法自动安装 curl，请手动安装：
     Ubuntu/Debian : sudo apt install -y curl
     CentOS/RHEL   : sudo yum install -y curl
     Alpine        : sudo apk add curl"
+    say "curl 安装完成"
+fi
 
-if command -v apt-get >/dev/null 2>&1 && ! "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+# ---- venv / ensurepip（Debian 系最容易缺）----
+if ! "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
     warn "缺少 venv/ensurepip 支持（Debian/Ubuntu 常见），尝试自动安装…"
     PYVER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-    SUDO=""
-    [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-    $SUDO apt-get update -qq >/dev/null 2>&1 || true
-    for pkg in "python${PYVER}-venv" "python3-venv"; do
-        if $SUDO apt-get install -y "$pkg" >/dev/null 2>&1; then
-            say "已安装 $pkg"
-            break
+    installed=0
+    for pkg in "python${PYVER}-venv" "python3-venv" python3-pip py3-pip; do
+        if install_system_packages "$pkg" 2>/dev/null; then
+            if "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+                say "已安装 $pkg"
+                installed=1
+                break
+            fi
         fi
     done
-    if ! "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+    if [ "$installed" != "1" ]; then
+        # 最后再试一次（有些发行版装上 python3-venv 就带 ensurepip 了）
+        if "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+            installed=1
+        fi
+    fi
+    if [ "$installed" != "1" ]; then
         die "venv 支持仍不可用，请手动安装后重试：
-    sudo apt install -y python${PYVER}-venv     # 或 python3-venv"
+    sudo apt install -y python${PYVER}-venv     # 或 python3-venv
+    sudo yum install -y python3-pip
+    sudo apk add py3-pip"
     fi
 fi
 
@@ -156,7 +251,20 @@ if [ -f "./run.py" ] && [ -f "./deploy.sh" ]; then
     say "当前目录已是项目根目录，跳过拉取"
     TARGET_DIR="$(pwd)"
 else
-    command -v git >/dev/null 2>&1 || die "需要 git 来拉取代码，请先安装 git"
+    # git 只在需要拉取代码时才要；已有代码就不强求
+    if ! command -v git >/dev/null 2>&1; then
+        warn "没找到 git，尝试自动安装…"
+        # shellcheck disable=SC2046
+        install_system_packages $(pkg_names git) || true
+        command -v git >/dev/null 2>&1 || die "需要 git 来拉取代码，请手动安装：
+    Ubuntu/Debian : sudo apt install -y git
+    CentOS/RHEL   : sudo yum install -y git
+    Alpine        : sudo apk add git
+或者用压缩包方式（不需要 git）：
+    mkdir -p $DIR && cd $DIR
+    curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz | tar xz --strip-components=1
+    sudo ./install.sh"
+    fi
     CLONE_URL="$(build_clone_url)"
 
     if [ -d "$DIR/.git" ]; then

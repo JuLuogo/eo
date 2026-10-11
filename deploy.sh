@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # 边缘节点优选 —— 裸机部署脚本（不需要 Docker）
 #
-#   ./deploy.sh install     交互式配置 + 安装 systemd 服务（会问端口和运营商）
+#   ./deploy.sh install     交互式配置 + 安装（会问运营商和端口，依赖自动装）
 #   ./deploy.sh config      重新交互式配置（改端口/运营商）并重启服务
 #   ./deploy.sh isp         识别本机运营商（联通/电信/移动）
 #   ./deploy.sh start       启动服务
 #   ./deploy.sh stop        停止服务
 #   ./deploy.sh restart     重启服务
-#   ./deploy.sh status      查看状态 + 运营商 + 访问地址 + 令牌
-#   ./deploy.sh logs        跟踪日志
-#   ./deploy.sh doctor      跑一次环境体检（确认链路可信）
+#   ./deploy.sh status      状态 + 运营商 + 端口 + 访问地址 + 令牌 + 健康检查
+#   ./deploy.sh logs        实时跟踪日志（Ctrl+C 退出）
+#   ./deploy.sh logs 200    查看最近 200 行后退出
+#   ./deploy.sh logs-err    只看错误级别日志
+#   ./deploy.sh logs-save   导出全部日志到文件（便于排查）
+#   ./deploy.sh doctor      环境体检（确认链路可信）
 #   ./deploy.sh scan        按本机运营商手动跑一轮优选
-#   ./deploy.sh uninstall   卸载 systemd 服务（保留数据）
+#   ./deploy.sh uninstall   卸载：停服务、删 systemd 单元与虚拟环境（保留配置和结果）
+#   ./deploy.sh uninstall --purge   完全卸载：连 .env / config / results 一起删
 #   ./deploy.sh run         前台直接跑（调试用，Ctrl+C 退出）
 #
 # 非交互安装（适合批量部署）：
@@ -341,6 +345,46 @@ ask_setup() {
     env_set EO_WEB_TOKEN "$token"
     env_set EO_PLATFORMS "$(carrier_platforms "$carrier")"
 
+    # ---- 可选：现在就配好华为云 DNS 密钥（回车即跳过）----
+    if [ "$tty" = "1" ] && [ "${SKIP_DNS_SDK:-0}" != "1" ]; then
+        local cur_ak cur_sk
+        cur_ak="$(env_get HUAWEI_AK '')"
+        cur_sk="$(env_get HUAWEI_SK '')"
+        if [ -n "$cur_ak" ]; then
+            log "已检测到 HUAWEI_AK（${cur_ak:0:4}****），跳过密钥配置"
+        else
+            printf '\n'
+            printf '是否现在配置「自动下发 DNS」（华为云）？\n'
+            printf '  需要华为云的 AccessKey，且该密钥要有 DNS 权限。\n'
+            printf '  不配也能正常优选，只是结果需要你自己手动填到 DNS。\n'
+            local want
+            want="$(ask "现在配置吗？[y/N]（回车跳过）: ")"
+            case "$want" in
+                y|Y|yes|YES)
+                    local ak sk
+                    ak="$(ask "AccessKey ID（回车跳过）: ")"
+                    if [ -n "$ak" ]; then
+                        sk="$(ask "AccessKey Secret: ")"
+                        if [ -n "$sk" ]; then
+                            env_set HUAWEI_AK "$ak"
+                            env_set HUAWEI_SK "$sk"
+                            env_set EO_DNS_SYNC "dry-run"
+                            log "已保存密钥，DNS 模式先设为 dry-run（只预览，不下发）"
+                            log "确认无误后在 Web 控制台把模式改成「执行」并勾选确认即可真正下发"
+                        else
+                            warn "Secret 为空，已跳过密钥配置"
+                        fi
+                    else
+                        log "已跳过密钥配置（之后可编辑 .env 或到 Web 控制台填写）"
+                    fi
+                    ;;
+                *)
+                    log "已跳过；之后可编辑 .env 或在 Web 控制台「DNS 下发」里填写"
+                    ;;
+            esac
+        fi
+    fi
+
     log "配置完成：运营商=$(carrier_label "$carrier")  端口=$port"
 }
 
@@ -543,7 +587,22 @@ case "${1:-}" in
         fi
         ;;
     logs)
-        journalctl -u "$APP_NAME" -f -n 100
+        # 默认跟随；./deploy.sh logs 200 看最近 200 行后退出
+        if [ -n "${2:-}" ]; then
+            journalctl -u "$APP_NAME" -n "$2" --no-pager
+        else
+            journalctl -u "$APP_NAME" -f -n 100
+        fi
+        ;;
+    logs-err)
+        journalctl -u "$APP_NAME" -p err --no-pager -n "${2:-100}"
+        ;;
+    logs-save)
+        # 导出全部日志到文件，便于发出来排查
+        _out="${2:-${SCRIPT_DIR}/edge-optimizer.log}"
+        journalctl -u "$APP_NAME" --no-pager > "$_out" 2>/dev/null || {
+            die "journalctl 不可用，日志请直接看：./deploy.sh logs"; }
+        log "日志已导出：$_out（$(wc -l < "$_out") 行）"
         ;;
     doctor)
         need_python
@@ -564,14 +623,45 @@ case "${1:-}" in
             run.py web --port "$port" --host-bind 0.0.0.0
         ;;
     uninstall)
+        # 默认：只卸载服务与虚拟环境，保留 results/ config/ .env（便于以后重装）
+        # --purge : 连配置、结果、日志一起删干净（完全卸载）
+        PURGE=0
+        for _arg in "$@"; do
+            [ "$_arg" = "--purge" ] && PURGE=1
+        done
+
+        log "停止并禁用服务…"
         systemctl stop "$APP_NAME" 2>/dev/null || true
         systemctl disable "$APP_NAME" 2>/dev/null || true
         rm -f "$SERVICE_FILE"
-        systemctl daemon-reload
-        log "已卸载 systemd 服务（results/ config/ .env 都保留了）"
+        systemctl daemon-reload 2>/dev/null || true
+        log "已移除 systemd 服务：$SERVICE_FILE"
+
+        # 虚拟环境（可重建，直接删）
+        if [ -d "$VENV_DIR" ]; then
+            rm -rf "$VENV_DIR"
+            log "已删除虚拟环境：$VENV_DIR"
+        fi
+        rm -f "${SCRIPT_DIR}/.deploy-state"
+
+        if [ "$PURGE" = "1" ]; then
+            rm -rf "${SCRIPT_DIR}/results" "${SCRIPT_DIR}/config" "${SCRIPT_DIR}/.venv"
+            rm -f "${SCRIPT_DIR}/.env" "${SCRIPT_DIR}/edge-optimizer.log"
+            log "已删除配置与结果：.env / config/ / results/"
+            warn "如需保留代码目录请自行 rm -rf ${SCRIPT_DIR}"
+        else
+            echo
+            echo "  保留内容（想彻底删干净请加 --purge）："
+            echo "    .env            —— 运营商、端口、令牌、密钥"
+            echo "    config/         —— Web 控制台的配置"
+            echo "    results/        —— 优选结果与历史"
+            echo
+            echo "  重新安装：sudo ./deploy.sh install"
+            echo "  完全卸载：sudo ./deploy.sh uninstall --purge"
+        fi
         ;;
     *)
-        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+        awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 && !/^#/ {exit}' "$0"
         exit 1
         ;;
 esac

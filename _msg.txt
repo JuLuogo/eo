@@ -1,0 +1,34 @@
+feat: 安装依赖全自动 + 文档补齐日志与完全卸载
+
+用户要求：脚本要一次把配置全部做完，文档里要写清查看日志、完全卸载等命令。
+
+安装更少人工干预（install.sh）
+- 缺 Python / curl / git 时自动安装（适配 apt / dnf / yum / apk / zypper / pacman）
+- 缺 venv(ensurepip) 时自动装 python<版本>-venv / python3-venv / python3-pip / py3-pip
+- 提权安全：root 直接用；非 root 且 sudo 免密或可交互才用 sudo，否则给手动指引，
+  不会卡在密码提示上
+- 自动安装失败才报错，且报错里给出可直接复制的命令
+- git fetch/pull 加 60 秒超时，避免网络挂住不动
+
+安装一步到位（deploy.sh）
+- 交互流程新增可选的「配置华为云 DNS 密钥」：直接回车跳过；填了就把 AK/SK
+  写入 .env 并把 DNS 模式设为 dry-run（只预览不下发），确认后可在网页改成执行
+- 已存在密钥时自动跳过该步骤，避免重复询问
+
+运维命令补齐（deploy.sh）
+- logs        实时跟踪
+- logs 200    最近 200 行后退出
+- logs-err    只看错误级别
+- logs-save   导出全部日志到 edge-optimizer.log
+- uninstall          卸载服务 + 删 venv，保留 .env/config/results
+- uninstall --purge  完全卸载，连 .env / config / results / 日志一起删
+- 帮助文本改为读取脚本头部注释块，不再依赖固定行号
+
+文档
+- INSTALL.md 重写为「安装与运维指南」：带目录、常用命令速查表、
+  查看日志（含 journalctl 原始命令与日志清理）、完全卸载（三种方式 + 手动清理
+  + Docker 卸载）、九大常见问题
+- README 快速开始同步更新命令表，并指向 INSTALL.md
+
+实测：uninstall 两种模式在隔离环境验证（普通卸载保留配置、--purge 清空）；
+交互流程三种场景验证（跳过 / 填写并设 dry-run / 已有密钥自动跳过）
