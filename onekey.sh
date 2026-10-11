@@ -21,6 +21,9 @@
 #   DIR              安装目录（默认 /opt/edge-optimizer）
 #   USE_GHCR         1=从 GHCR 拉取现成镜像（默认 0=本机构建）
 #   IMAGE            镜像名（USE_GHCR=1 时生效，默认 ghcr.io/julugo/eo:latest）
+#   GHCR_TOKEN       GitHub 私人令牌（勾选 read:packages）。GHCR 包为私有时，
+#                    带上它即可自动登录拉取，省去在服务器上手动 docker login
+#   GHCR_USER        GitHub 用户名（默认 JuLuogo）
 set -euo pipefail
 
 DIR="${DIR:-/opt/edge-optimizer}"
@@ -143,13 +146,23 @@ fi
 # --------------------------------------------------------------------------
 if [ "$USE_GHCR" = "1" ]; then
     say "从 GHCR 拉取现成镜像：$IMAGE"
+
+    # 私有包需要先登录。提供了 GHCR_TOKEN 就自动登录（令牌需勾选 read:packages）
+    if [ -n "${GHCR_TOKEN:-}" ]; then
+        if printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-JuLuogo}" --password-stdin >/dev/null 2>&1; then
+            say "已登录 ghcr.io（用户 ${GHCR_USER:-JuLuogo}）"
+        else
+            warn "GHCR 登录失败，继续尝试匿名拉取"
+        fi
+    fi
+
     if ! docker pull "$IMAGE"; then
         warn "拉取失败。GHCR 的包默认是【私有】的，两种解决方式："
         warn "  A) 到 GitHub 把包改成公开（一次性，之后免登录）："
         warn "     仓库页 -> 右侧 Packages -> eo -> Package settings"
         warn "     -> Danger Zone -> Change package visibility -> Public"
-        warn "  B) 保持私有，先登录再拉（需要一个 GitHub 私人令牌，勾选 read:packages）："
-        warn "     echo <你的GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin"
+        warn "  B) 保持私有，用 GitHub 私人令牌（勾选 read:packages）自动登录："
+        warn "     重新执行本命令，并加上 GHCR_TOKEN=<你的GitHub令牌>"
         warn "或改用本机构建（去掉 USE_GHCR=1 即可）。"
         exit 1
     fi
