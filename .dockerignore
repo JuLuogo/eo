@@ -1,0 +1,18 @@
+# 镜像构建时排除的文件：密钥、结果、临时产物都不要进镜像
+.env
+.env.*
+!.env.example
+results/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+.git/
+.gitignore
+.venv/
+venv/
+_*.py
+targets/_*
+yes.txt
+eo.txt

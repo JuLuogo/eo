@@ -1,0 +1,23 @@
+# 密钥与运行产物 —— 绝不能提交
+.env
+.env.local
+config/
+results/
+*.log
+*.bak
+_*.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 兼容期的老文件（可由 run.py 重新生成）
+yes.txt
