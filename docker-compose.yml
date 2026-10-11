@@ -1,45 +1,52 @@
-# 多平台边缘节点优选 —— 一键部署（含 Web 控制台）
+# 多平台边缘节点优选 —— Docker 一键部署
 #
-#   docker compose up -d --build      # 构建并后台运行
-#   docker compose logs -f            # 看启动日志（里面有网页地址和访问令牌）
-#   docker compose down               # 停止
+#   ./docker-setup.sh          # 交互式生成 .env（问运营商和端口），然后按提示启动
+#   docker compose up -d --build
+#   docker compose logs -f     # 启动日志里有网页地址和访问令牌
+#   docker compose down        # 停止
 #
-# 打开 http://<服务器IP>:8787/?token=<日志里打印的令牌>
+# 打开 http://<服务器IP>:<EO_WEB_PORT>/?token=<日志里打印的令牌>
 #
 # 关键点：
-#   * config/ 用 volume 挂载 —— 网页上改的配置与密钥都持久化在这里（建议 chmod 700）
+#   * config/ 用 volume 挂载 —— 网页上改的配置与密钥持久化在这里，重建镜像不丢
 #   * results/ 与 targets/ 也挂载出来，重建镜像不丢数据，改网段不用重新 build
 #   * 容器内所有平台合计 TCP 连接速率由 EO_RATE 限制（默认 100/秒，网页上可改）
-#   * 真正下发 DNS 需要在网页上把模式设为「执行」并勾选确认（双重保险）
+#   * 真正下发 DNS 需要：网页模式选「执行」+ 勾选确认（双重保险）
 services:
   optimizer:
-    build: .
+    build:
+      context: .
+      args:
+        # 国内拉不动基础镜像时，取消下面一行的注释（或用 docker-setup.sh 自动处理）
+        # BASE_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        # INSTALL_DNS_SDK: "0"     # 纯优选（不装华为云 SDK），构建更快
     image: edge-optimizer:latest
     container_name: edge-optimizer
     restart: unless-stopped
     env_file:
-      - .env                      # 放密钥/通知 webhook，别提交到仓库
+      - .env                      # 放密钥/运营商/端口，别提交到仓库
     environment:
-      TZ: Asia/Shanghai           # --window 时间窗口与日志时间按此时区
-      EO_MODE: web                # web=带管理页面；也可改成 monitor 纯后台跑
-      EO_WEB_PORT: "8787"
-      # EO_WEB_TOKEN: "自己指定一个长随机串"   # 留空则自动生成并写入 config/config.json
-      EO_PLATFORMS: "eo"          # web 模式下仅作为首次默认值
-      EO_RATE: "100"              # ★ 全平台合计 TCP 连接上限 100/秒
-      EO_INTERVAL: "300"
-      EO_WINDOW: ""               # 例如 "00:00-07:00"，留空表示全天
-      EO_DNS_SYNC: none           # none | dry-run | push
-      EO_CONFIRM_DNS: "no"        # push 时需要 yes（web 模式下以网页勾选为准）
-      # EO_WORKERS: "80"
-      # EO_TIMEOUT: "3"
-      # EO_EXTRA_ARGS: "--ping"   # 可选追加参数
+      TZ: ${TZ:-Asia/Shanghai}    # 时间窗口与日志时间按此时区
+      EO_MODE: web                # web=带管理页面；monitor=纯后台循环；scan=跑一次
+      EO_WEB_PORT: "${EO_WEB_PORT:-8787}"
+      EO_NETWORK: "${EO_NETWORK:-lt}"     # lt=联通 / dx=电信 / yd=移动
+      EO_PLATFORMS: "${EO_PLATFORMS:-eo-lt,esa-lt,cft-lt}"
+      EO_RATE: "${EO_RATE:-100}"          # ★ 全平台合计 TCP 连接上限 100/秒
+      EO_INTERVAL: "${EO_INTERVAL:-300}"
+      EO_WINDOW: "${EO_WINDOW:-}"         # 例如 00:00-07:00，留空=全天
+      EO_DNS_SYNC: "${EO_DNS_SYNC:-none}" # none | dry-run | push
+      EO_CONFIRM_DNS: "${EO_CONFIRM_DNS:-no}"   # push 时需要 yes
+      EO_WEB_TOKEN: "${EO_WEB_TOKEN:-}"   # 留空则自动生成并写入 config/config.json
+      EO_WEBHOOK: "${EO_WEBHOOK:-}"
+      HUAWEI_AK: "${HUAWEI_AK:-}"
+      HUAWEI_SK: "${HUAWEI_SK:-}"
     ports:
-      - "8787:8787"               # Web 控制台
+      - "${EO_WEB_PORT:-8787}:${EO_WEB_PORT:-8787}"
     volumes:
-      - ./config:/app/config            # 配置与密钥（持久化，权限 600）
-      - ./results:/app/results
-      - ./targets:/app/targets          # 网段文件；也可只读挂载 :ro
-      - ./eo/platforms.py:/app/eo/platforms.py:ro   # 需要改平台定义时用
+      - ./config:/app/config            # 配置与密钥（持久化）
+      - ./results:/app/results          # 优选结果与历史
+      - ./targets:/app/targets          # 网段文件；改完不用重建镜像
     ulimits:
       nofile:
         soft: 8192

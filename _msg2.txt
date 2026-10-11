@@ -1,0 +1,36 @@
+feat: Docker 路线完善（含交互配置脚本与国内网络优化），文档补齐 Docker 安装/日志/卸载
+
+用户反馈脚本安装仍有环境问题，希望走 Docker 绕过环境依赖。
+
+关于镜像仓库
+- Gitee 只托管代码，不提供 Docker 镜像存储；想在 Gitee 上做「推送即构建」，
+  需要接华为云 SWR（Gitee 官方文档说明），文档里给了指引
+- 但本方案【不需要任何镜像仓库】：docker compose up -d --build 就在本机构建并运行
+
+Dockerfile
+- 新增构建参数 BASE_IMAGE：国内可换成 docker.m.daocloud.io/library/python:3.12-slim
+- 新增 APT_MIRROR：可切换 debian 源（境内加速）
+- pip 源默认改为清华镜像，彻底避开境内访问 PyPI 被重置的问题
+- 新增 INSTALL_DNS_SDK=0 可跳过华为云 SDK（纯优选，构建更快）
+- COPY 补上 INSTALL.md；补 image.source 标签
+
+docker-compose.yml
+- 修正 EO_PLATFORMS 默认值（原为已不存在的 "eo"，现为 eo-lt,esa-lt,cft-lt）
+- 补齐 EO_NETWORK / EO_WEB_TOKEN / EO_WEBHOOK / HUAWEI_AK / HUAWEI_SK 透传
+- 端口与平台列表改为引用 .env 变量，避免与 docker-setup.sh 写的不一致
+- build.args 透传 PIP_INDEX
+- 去掉容易与网页配置混淆的 platforms.py 只读挂载
+
+新增 docker-setup.sh
+- 检查 Docker 与 compose、确认权限（非 root 时给出 usermod 指引）
+- 自动识别本机运营商并让用户确认（复用 eo/deploytool.py）
+- 按运营商给不同默认端口（lt/8787、dx/8788、yd/8789）
+- 生成/更新 .env（含随机访问令牌），--up 可一步构建并启动
+
+文档
+- INSTALL.md 重排为九节并重建目录，Docker 提到第六节（最省事，推荐）
+- 新增：Docker 安装三步、常用命令、国内网络优化（daemon.json 镜像加速 /
+  BASE_IMAGE 构建参数）、跳过 SDK、Docker 卸载、三台机器共用镜像（save/load 或推 SWR）
+
+实测：docker-setup.sh 四种场景（选电信/选移动+自定义端口/非交互环境变量/--up）
+在 stub docker 环境下全部通过；compose YAML 解析正常

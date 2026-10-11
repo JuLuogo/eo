@@ -18,8 +18,8 @@ curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh
 - [三、常用命令速查](#三常用命令速查)
 - [四、查看日志](#四查看日志)
 - [五、完全卸载](#五完全卸载)
-- [六、手动安装（不用一键脚本）](#六手动安装不用一键脚本)
-- [七、Docker 安装](#七docker-安装)
+- [六、Docker 安装](#六docker-安装最省事推荐)
+- [七、手动安装](#七手动安装不用一键脚本也不装-docker)
 - [八、三台机器分工](#八三台机器联通电信移动怎么部署)
 - [九、常见问题](#九常见问题)
 
@@ -263,7 +263,145 @@ sudo rm -rf /opt/edge-optimizer
 
 ---
 
-## 六、手动安装（不用一键脚本）
+## 六、Docker 安装（最省事，推荐）
+
+Docker 会把 Python、venv、pip、依赖全部封装进镜像，**不受服务器环境影响**，
+也不会遇到 `ensurepip`、`ConnectionResetError` 这类问题。
+
+### 7.1 装 Docker（如果还没有）
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+docker --version && docker compose version
+```
+
+### 7.2 拉代码 + 构建 + 启动（三条命令）
+
+```bash
+# 1. 拉代码
+git clone https://gitee.com/peroe/eo.git /opt/edge-optimizer
+cd /opt/edge-optimizer
+
+# 2. 交互式生成 .env（问运营商和端口，自动识别本机运营商）
+./docker-setup.sh
+
+# 3. 构建并启动
+docker compose up -d --build
+docker compose logs -f          # 启动日志里有访问地址和令牌
+```
+
+**想一步到位**：
+
+```bash
+./docker-setup.sh --up          # 配置 + 构建 + 启动
+```
+
+**不想用配置脚本，纯手工**：
+
+```bash
+cd /opt/edge-optimizer
+cp .env.example .env
+vi .env                         # 改 EO_NETWORK=lt/dx/yd、EO_WEB_PORT
+docker compose up -d --build
+```
+
+> **不需要任何镜像仓库**。镜像是你本机 `docker build` 出来的，`docker compose up -d --build`
+> 这一条就直接构建并运行了。Gitee 只存代码，不存 Docker 镜像。
+
+### 7.3 常用命令
+
+```bash
+cd /opt/edge-optimizer
+
+docker compose ps                                   # 状态（含健康检查）
+docker compose logs -f                              # 实时日志
+docker compose logs -f --tail 200                   # 最近 200 行
+docker compose restart                              # 重启
+docker compose down                                 # 停止并删除容器（保留数据卷挂载的目录）
+docker compose up -d --build                        # 改代码后重建并启动
+
+docker compose run --rm optimizer doctor            # 环境体检
+docker compose run --rm optimizer scan -p eo-lt -q  # 手动跑一轮优选
+docker compose run --rm optimizer list --all-platforms   # 看平台清单
+docker compose run --rm optimizer dns-check -p eo-lt     # 只读查看 DNS 解析
+docker compose run --rm optimizer logs-save              # （容器内无 journalctl，日志看 compose）
+```
+
+### 7.4 国内网络优化（拉不动基础镜像时）
+
+基础镜像 `python:3.12-slim` 默认从 Docker Hub 拉，境内可能很慢或失败。两种办法：
+
+**办法一：给 Docker 配镜像加速（推荐，一次配好长期有效）**
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com",
+    "https://mirror.ccs.tencentyun.com"
+  ]
+}
+EOF
+sudo systemctl restart docker
+```
+
+**办法二：构建时直接指定可用的基础镜像**
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  -t edge-optimizer:latest .
+docker compose up -d          # 镜像已存在，直接启动
+```
+
+> Dockerfile 里的 pip 源**默认已用清华镜像**，所以不会再出现你之前那种
+> `ConnectionResetError`。想换源可以 `--build-arg PIP_INDEX=...`。
+
+### 7.5 不想装华为云 SDK（纯优选）
+
+```bash
+docker build --build-arg INSTALL_DNS_SDK=0 -t edge-optimizer:latest .
+# 或在 compose 的 build.args 里加 INSTALL_DNS_SDK: "0"
+```
+
+### 7.6 Docker 卸载
+
+```bash
+cd /opt/edge-optimizer
+docker compose down                  # 停容器
+docker rmi edge-optimizer:latest     # 删镜像
+sudo rm -rf /opt/edge-optimizer      # 删目录（含 config/ results/ .env）
+```
+
+### 7.7 三台机器用 Docker
+
+每台机器 `./docker-setup.sh` 时选自己那个运营商即可（端口也自动错开）。
+如果想**只构建一次、三台共用**，可以把镜像导出再传过去：
+
+```bash
+# 联通机上构建后导出
+docker save edge-optimizer:latest | gzip > edge-optimizer.tar.gz
+scp edge-optimizer.tar.gz user@电信机:/tmp/
+
+# 电信机上导入
+docker load < /tmp/edge-optimizer.tar.gz
+cd /opt/edge-optimizer && ./docker-setup.sh --up      # 会直接复用已有镜像
+```
+
+或者推到镜像仓库（华为云 SWR 支持与 Gitee 联动自动构建，见
+[Gitee 帮助文档](https://help.gitee.com/devops/connect/HUAWEI-Cloud-SWR/)）：
+
+```bash
+docker tag edge-optimizer:latest swr.cn-north-4.myhuaweicloud.com/<你的组织>/edge-optimizer:latest
+docker push swr.cn-north-4.myhuaweicloud.com/<你的组织>/edge-optimizer:latest
+```
+
+---
+
+## 七、手动安装（不用一键脚本，也不装 Docker）
 
 ```bash
 # 1. 系统依赖
@@ -291,28 +429,6 @@ vi .env           # EO_NETWORK=lt/dx/yd、EO_WEB_PORT、HUAWEI_AK/SK
 
 前台跑起来后想常驻，用 `nohup` 或自己写 systemd 单元（可参考 `deploy.sh install` 生成的）。
 **推荐还是用一键脚本**，它是幂等的，重复执行只会更新代码并复用已有环境。
-
----
-
-## 七、Docker 安装
-
-```bash
-git clone https://gitee.com/peroe/eo.git /opt/edge-optimizer
-cd /opt/edge-optimizer
-cp .env.example .env
-vi .env
-docker compose up -d --build
-docker compose logs -f                 # 启动日志里有访问地址和令牌
-```
-
-```bash
-docker compose ps                                   # 状态
-docker compose logs -f --tail 100                   # 看日志
-docker compose run --rm optimizer doctor            # 体检
-docker compose run --rm optimizer scan -p eo-lt -q  # 手动跑一轮
-docker compose restart                              # 重启
-docker compose down                                 # 停止并删除容器
-```
 
 ---
 
