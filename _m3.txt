@@ -1,0 +1,27 @@
+feat: 新增一键部署脚本 onekey.sh 与 GitHub Actions 自动构建
+
+用户要求：推送到 GitHub、构建在 GitHub 完成、给一条可直接执行的命令。
+
+GitHub Actions（.github/workflows/build-image.yml）
+- push 到 main / 打 v* 标签 / 手动触发时，自动构建镜像并推送到 GHCR
+- 用内置 GITHUB_TOKEN 登录，无需额外配置任何密钥
+- 带 gha 构建缓存，后续构建更快
+- build-args 默认走清华 pip 源
+
+onekey.sh（一条命令完成部署）
+- 检查/自动安装 Docker，确认 compose 可用与权限
+- 拉取或更新代码（禁用交互式认证，避免过期凭据卡住）
+- 未指定 EO_NETWORK 时自动识别本机运营商
+- 生成 .env：运营商、端口（按运营商默认 lt=8787/dx=8788/yd=8789）、
+  随机访问令牌、平台列表、限速、间隔、时间窗口、DNS 模式、华为云密钥
+- 默认 EO_DNS_SYNC=dry-run（只预览不下发），避免一键部署误改线上解析
+- 本机构建（默认）或从 GHCR 拉取现成镜像（USE_GHCR=1）
+- 结束后打印访问地址、容器状态与常用运维命令
+
+安全说明
+- 一键命令里的 HUAWEI_AK/SK 只在运行时作为环境变量传入，写入服务器本地 .env
+  （权限 600、已被 .gitignore 排除），不会进入仓库或镜像
+- 仓库内不保存任何密钥
+
+实测：onekey.sh 三种场景（联通+密钥+默认端口 / 电信+自定义端口+自定义限速 /
+无密钥）在 stub docker 环境下全部通过，.env 内容与参数传递正确
