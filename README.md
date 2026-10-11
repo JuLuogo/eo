@@ -60,6 +60,16 @@ sudo ./deploy.sh install     # 交互式配置 + 装 systemd
 ./deploy.sh uninstall                   # 卸载服务（保留数据）
 ```
 
+### 装不动时看这里
+
+| 报错 | 原因与解法 |
+| --- | --- |
+| `ensurepip is not available` / `Failing command: .venv/bin/python3` | Debian/Ubuntu 缺 `python3-venv`。脚本会自动装，失败就手动：`sudo apt install -y python3.13-venv`（版本号换成 `python3 -V` 显示的） |
+| 反复提示 `Username for 'https://gitee.com'` | 仓库是公开的，不需要账号。是服务器上存了过期凭据，清掉即可：`git config --global --unset credential.helper && rm -f ~/.git-credentials` |
+| 拉取失败 | 脚本会自动改用压缩包下载；也可手动：`curl -fL https://gitee.com/peroe/eo/repository/archive/main.tar.gz \| tar xz --strip-components=1` |
+
+更多见 [INSTALL.md 常见问题](INSTALL.md)。
+
 Docker 方式见 [INSTALL.md 第三节](INSTALL.md)。
 
 ---

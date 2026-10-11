@@ -57,6 +57,71 @@ need_curl() {
 }
 
 # --------------------------------------------------------------------------
+# 虚拟环境依赖：Debian/Ubuntu 上 python3-venv 可能没装
+# 症状：创建 venv 时报 "ensurepip is not available / Failing command: .venv/bin/python3"
+# 注意：只测 `import venv` 是测不出来的，必须看 ensurepip。
+# --------------------------------------------------------------------------
+venv_module_ok() {
+    "$PYTHON_BIN" -c 'import ensurepip, venv' >/dev/null 2>&1
+}
+
+pip_in_venv() {
+    [ -x "$VENV_DIR/bin/pip" ] && "$VENV_DIR/bin/pip" --version >/dev/null 2>&1
+}
+
+# 需要 root（或 sudo）才能装系统包；这里返回可用的提权前缀。
+# 若当前既不是 root、sudo 又需要密码且没有终端，则返回 "unavailable"，
+# 避免脚本卡在密码提示上（无人值守/管道执行时会死锁）。
+sudo_prefix() {
+    if [ "$(id -u)" = "0" ]; then
+        echo ""
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        echo "sudo"
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 && is_interactive; then
+        echo "sudo"          # 有终端，可以正常输密码
+        return 0
+    fi
+    echo "unavailable"
+    return 1
+}
+
+# 按发行版安装 python venv 支持包
+install_venv_package() {
+    local prefix pyver pkg
+    if ! prefix="$(sudo_prefix)"; then
+        warn "需要 root 权限安装 venv 支持包，但当前无法提权（非 root 且 sudo 需密码）"
+        return 1
+    fi
+    pyver="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+
+    if command -v apt-get >/dev/null 2>&1; then
+        warn "缺少 ensurepip，尝试安装 venv 支持包…"
+        # 优先装与当前解释器版本匹配的包（Debian 12+/Ubuntu 23+ 需要），再试通用包
+        for pkg in "python${pyver}-venv" "python3-venv"; do
+            $prefix env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+            if $prefix env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >/dev/null 2>&1; then
+                log "已安装 $pkg"
+                return 0
+            fi
+        done
+    elif command -v dnf >/dev/null 2>&1; then
+        warn "缺少 ensurepip，尝试安装 python3-pip…"
+        $prefix dnf install -y python3-pip >/dev/null 2>&1 && return 0
+    elif command -v yum >/dev/null 2>&1; then
+        warn "缺少 ensurepip，尝试安装 python3-pip…"
+        $prefix yum install -y python3-pip >/dev/null 2>&1 && return 0
+    elif command -v apk >/dev/null 2>&1; then
+        warn "缺少 ensurepip，尝试安装 py3-pip / python3…"
+        $prefix apk add --no-cache py3-pip >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+# --------------------------------------------------------------------------
 # .env 读写：交给 Python 处理，能正确剥离行尾注释
 # （用 grep/sed 取值会把 "8787   # 说明" 整个当成端口，导致莫名报错）
 # --------------------------------------------------------------------------
@@ -227,12 +292,46 @@ ask_setup() {
 }
 
 install_deps() {
-    log "创建虚拟环境：$VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    # 先确认 venv 真的可用（Debian/Ubuntu 经常缺 python3-venv）
+    if ! venv_module_ok; then
+        PYVER_SHORT="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+        install_venv_package || die "无法自动安装 venv 支持包，请手动执行后重试：
+    Debian/Ubuntu : sudo apt install -y python3-venv
+    CentOS/RHEL   : sudo yum install -y python3-pip
+    Alpine        : sudo apk add py3-pip
+    （Debian 12+/Ubuntu 23+ 若说找不到 python3-venv，请装同版本包：
+      sudo apt install -y python${PYVER_SHORT}-venv ）"
+        venv_module_ok || die "venv 支持包已安装但仍不可用，请检查 $PYTHON_BIN 是否完整"
+    fi
+
+    # 上一次失败可能留下不完整的 .venv（例如 ensurepip 缺失时创建到一半），先清掉
+    if [ -d "$VENV_DIR" ] && ! pip_in_venv; then
+        warn "$VENV_DIR 存在但不可用（可能是上次失败残留），清理后重建"
+        rm -rf "$VENV_DIR"
+    fi
+
+    if [ ! -d "$VENV_DIR" ]; then
+        log "创建虚拟环境：$VENV_DIR"
+        if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
+            rm -rf "$VENV_DIR"
+            die "创建虚拟环境失败。请先安装 venv 支持包后重试：
+    Debian/Ubuntu : sudo apt install -y python3-venv
+    CentOS/RHEL   : sudo yum install -y python3-pip
+    Alpine        : sudo apk add py3-pip"
+        fi
+    else
+        log "复用已有虚拟环境：$VENV_DIR"
+    fi
+
+    pip_in_venv || die "虚拟环境里没有可用的 pip，请删掉 $VENV_DIR 后重试"
+
     "$VENV_DIR/bin/pip" install --quiet --upgrade pip
     # 只有下发华为云 DNS 才必须装这两个包，装了也不影响纯扫描
     log "安装依赖：huaweicloudsdkcore huaweicloudsdkdns"
-    "$VENV_DIR/bin/pip" install --quiet huaweicloudsdkcore huaweicloudsdkdns
+    if ! "$VENV_DIR/bin/pip" install --quiet huaweicloudsdkcore huaweicloudsdkdns; then
+        warn "依赖安装失败（网络问题？）。优选功能仍可用，但无法下发华为云 DNS。"
+        warn "稍后可手动重试：$VENV_DIR/bin/pip install huaweicloudsdkcore huaweicloudsdkdns"
+    fi
 }
 
 write_service() {

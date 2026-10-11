@@ -168,6 +168,25 @@ EO_NETWORK=lt EO_WEB_PORT=8787 ./install.sh --yes
 
 ## 五、常见问题
 
+**Q：安装时报 `ensurepip is not available` / `Failing command: .../.venv/bin/python3`**
+
+Debian/Ubuntu 默认不带 `python3-venv`（只装了解释器本体），建虚拟环境时就会失败。
+装脚本会**自动检测并尝试安装**（注意：只检测 `import venv` 是查不出来的，必须看 `ensurepip`）。
+如果自动安装没成功（比如机器不通外网），手动执行：
+
+```bash
+# 先看你的 Python 版本
+python3 -V
+
+# 装对应版本的 venv 包（Debian 12+/Ubuntu 23+ 需要带版本号的包名）
+sudo apt update
+sudo apt install -y python3.13-venv     # 把 3.13 换成你上面看到的版本
+# 或者先试通用包：
+sudo apt install -y python3-venv
+```
+
+然后重跑安装即可（上次失败残留的 `.venv` 会被自动清理重建，不用手动删）。
+
 **Q：拉代码时一直提示 `Username for 'https://gitee.com'`，输了密码还是 `Authentication failed`**
 
 仓库是**公开**的，正常不需要任何认证。出现这个提示是因为**服务器上存着一份过期的 Gitee 凭据**，

@@ -55,9 +55,22 @@ command -v curl >/dev/null 2>&1 || die "缺少 curl：
     CentOS/RHEL   : sudo yum install -y curl
     Alpine        : sudo apk add curl"
 
-if command -v apt-get >/dev/null 2>&1 && ! "$PYTHON_BIN" -c 'import venv' >/dev/null 2>&1; then
-    warn "缺少 venv 模块，尝试安装 python3-venv…"
-    apt-get install -y python3-venv >/dev/null 2>&1 || true
+if command -v apt-get >/dev/null 2>&1 && ! "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+    warn "缺少 venv/ensurepip 支持（Debian/Ubuntu 常见），尝试自动安装…"
+    PYVER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+    SUDO=""
+    [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    $SUDO apt-get update -qq >/dev/null 2>&1 || true
+    for pkg in "python${PYVER}-venv" "python3-venv"; do
+        if $SUDO apt-get install -y "$pkg" >/dev/null 2>&1; then
+            say "已安装 $pkg"
+            break
+        fi
+    done
+    if ! "$PYTHON_BIN" -c 'import ensurepip' >/dev/null 2>&1; then
+        die "venv 支持仍不可用，请手动安装后重试：
+    sudo apt install -y python${PYVER}-venv     # 或 python3-venv"
+    fi
 fi
 
 # --------------------------------------------------------------------------
