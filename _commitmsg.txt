@@ -1,0 +1,22 @@
+fix(deploy): pip 下载被重置时自动切换国内镜像，并支持 --no-dns 跳过 SDK
+
+用户服务器上报错：
+  pip._vendor.urllib3.exceptions.ProtocolError:
+  ("Connection broken: ConnectionResetError(104, '连接被对方重置')")
+
+根因：境内访问 pypi.org 下载包时连接被重置（PyPI 在境内不稳定）。
+另外华为云 SDK 只有「自动下发 DNS」才用得到，装不上不该中断整个安装。
+
+修复：
+- 新增 install_python_packages：默认源失败后依次自动尝试
+  清华 / 阿里云 / 腾讯云 / 中科大 四个镜像，每个都带 240s 超时与重试
+- 支持 PIP_INDEX 环境变量指定优先镜像源
+- 安装失败不再中断：降级为醒目警告 + 可直接复制的手动补装命令
+  （优选功能只用标准库 + curl，不受影响）
+- 新增 no-dns 参数：纯优选场景直接跳过 SDK，安装更快更稳
+  用法：curl -fsSL .../install.sh | sudo sh -s -- no-dns
+- pip 自身升级失败也不再致命
+- install.sh 的 git fetch/pull 加 60s 超时，避免拉取挂住不动
+- INSTALL.md / README 补充该问题与镜像源配置方法
+
+实测：四个镜像索引页均返回 200，从清华源成功下载并校验 wheel 完整

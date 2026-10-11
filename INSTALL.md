@@ -168,6 +168,34 @@ EO_NETWORK=lt EO_WEB_PORT=8787 ./install.sh --yes
 
 ## 五、常见问题
 
+**Q：装依赖时报 `ConnectionResetError: [Errno 104] 连接被对方重置` / `ProtocolError: Connection broken`**
+
+这是**从 PyPI 下载包时网络被重置**，境内服务器很常见（`pypi.org` 不稳定）。
+装脚本已经内置了镜像回退：默认源失败后会自动改用清华、阿里云、腾讯云、中科大镜像重试。
+如果全部失败，脚本**不会中断安装**（优选功能只用标准库 + curl，不需要这些包），只影响自动下发 DNS。
+
+手动补装（指定镜像即可）：
+
+```bash
+/opt/edge-optimizer/.venv/bin/pip install \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    huaweicloudsdkcore huaweicloudsdkdns
+```
+
+想永久指定镜像源（所有 pip 操作都走它）：
+
+```bash
+export PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple    # 装脚本会优先用这个
+# 或者写进 pip 配置：
+mkdir -p ~/.pip && printf '[global]\nindex-url = https://pypi.tuna.tsinghua.edu.cn/simple\n' > ~/.pip/pip.conf
+```
+
+**完全不需要自动下发 DNS 的话**，安装时直接跳过这两个包，更快也不受网络影响：
+
+```bash
+curl -fsSL https://gitee.com/peroe/eo/raw/main/install.sh | sudo sh -s -- --no-dns
+```
+
 **Q：安装时报 `ensurepip is not available` / `Failing command: .../.venv/bin/python3`**
 
 Debian/Ubuntu 默认不带 `python3-venv`（只装了解释器本体），建虚拟环境时就会失败。

@@ -99,6 +99,16 @@ git_quiet() {
         git -c credential.helper= "$@"
 }
 
+# 带超时执行（没有 timeout 命令时直接执行）
+run_with_timeout() {
+    local seconds="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 clone_hint() {
     cat >&2 <<'EOF'
 
@@ -151,12 +161,16 @@ else
 
     if [ -d "$DIR/.git" ]; then
         say "目录已存在，执行更新：$DIR"
-        if ! git_quiet -C "$DIR" fetch origin "$BRANCH" 2>/dev/null; then
-            warn "更新失败（网络或权限问题），继续使用当前版本"
+        # 加超时：部分服务器到 Gitee 的连接会长时间挂住
+        if ! run_with_timeout 60 git_quiet -C "$DIR" fetch origin "$BRANCH" 2>/dev/null; then
+            warn "fetch 失败或超时（网络/权限问题），继续使用当前版本"
         else
             git_quiet -C "$DIR" checkout "$BRANCH" 2>/dev/null || true
-            git_quiet -C "$DIR" pull --ff-only origin "$BRANCH" 2>/dev/null || \
-                warn "更新失败，继续使用当前版本"
+            if ! run_with_timeout 60 git_quiet -C "$DIR" pull --ff-only origin "$BRANCH" 2>/dev/null; then
+                warn "pull 失败或超时，继续使用当前版本"
+                warn "手动更新：cd $DIR && git fetch origin $BRANCH && git merge --ff-only origin/$BRANCH"
+                warn "（git 更新不影响本次安装；脚本本体已是服务器上的版本）"
+            fi
         fi
     else
         say "拉取代码到 $DIR"
@@ -189,6 +203,7 @@ chmod +x ./deploy.sh 2>/dev/null || true
 
 if [ "$(id -u)" = "0" ]; then
     say "以 root 运行，开始安装（会询问运营商与端口）…"
+    say "提示：不想装华为云 DNS SDK（纯优选）可加 --no-dns"
     ./deploy.sh install "$@"
 else
     if command -v sudo >/dev/null 2>&1; then

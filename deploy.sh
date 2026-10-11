@@ -31,6 +31,7 @@ ENV_FILE="${SCRIPT_DIR}/.env"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ASSUME_YES=0
+SKIP_DNS_SDK="${SKIP_DNS_SDK:-0}"
 
 log()  { printf '\033[1;34m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -67,6 +68,58 @@ venv_module_ok() {
 
 pip_in_venv() {
     [ -x "$VENV_DIR/bin/pip" ] && "$VENV_DIR/bin/pip" --version >/dev/null 2>&1
+}
+
+# 带超时执行命令（没有 timeout 命令时直接执行）
+run_with_timeout() {
+    local seconds="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
+# 安装 Python 包：PyPI 在境内经常连不上，失败后自动换国内镜像重试。
+# 返回 0 表示装上，1 表示彻底失败（调用方决定是否致命）。
+PIP_MIRRORS="
+https://pypi.tuna.tsinghua.edu.cn/simple
+https://mirrors.aliyun.com/pypi/simple/
+https://mirrors.cloud.tencent.com/pypi/simple/
+https://mirrors.ustc.edu.cn/pypi/simple/
+"
+PIP_INDEX="${PIP_INDEX:-}"
+
+install_python_packages() {
+    local pkg_args="$*" first=1 index log_file rc
+    log_file="$(mktemp)"
+
+    # 首选：用户指定的 PIP_INDEX，其次默认 PyPI，最后依次尝试国内镜像
+    for index in $PIP_INDEX "" $PIP_MIRRORS; do
+        if [ -z "$index" ]; then
+            [ "$first" = "1" ] || continue          # 空 index 只当作默认源试一次
+            log "安装依赖（默认 PyPI 源）：$pkg_args"
+            # shellcheck disable=SC2086
+            if run_with_timeout 240 "$VENV_DIR/bin/pip" install --quiet --disable-pip-version-check \
+                   --retries 2 --timeout 25 $pkg_args >"$log_file" 2>&1; then
+                rm -f "$log_file"; return 0
+            fi
+            first=0
+        else
+            log "默认源失败，改用镜像重试：$index"
+            # shellcheck disable=SC2086
+            if run_with_timeout 240 "$VENV_DIR/bin/pip" install --quiet --disable-pip-version-check \
+                   --retries 2 --timeout 25 -i "$index" $pkg_args >"$log_file" 2>&1; then
+                log "已从镜像安装成功：$index"
+                rm -f "$log_file"; return 0
+            fi
+        fi
+    done
+
+    warn "Python 包安装失败，最后一次错误摘要："
+    tail -5 "$log_file" 2>/dev/null | sed 's/^/    /' || true
+    rm -f "$log_file"
+    return 1
 }
 
 # 需要 root（或 sudo）才能装系统包；这里返回可用的提权前缀。
@@ -325,13 +378,32 @@ install_deps() {
 
     pip_in_venv || die "虚拟环境里没有可用的 pip，请删掉 $VENV_DIR 后重试"
 
-    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
-    # 只有下发华为云 DNS 才必须装这两个包，装了也不影响纯扫描
-    log "安装依赖：huaweicloudsdkcore huaweicloudsdkdns"
-    if ! "$VENV_DIR/bin/pip" install --quiet huaweicloudsdkcore huaweicloudsdkdns; then
-        warn "依赖安装失败（网络问题？）。优选功能仍可用，但无法下发华为云 DNS。"
-        warn "稍后可手动重试：$VENV_DIR/bin/pip install huaweicloudsdkcore huaweicloudsdkdns"
+    # pip 本体升级失败不致命（旧版也能装包）
+    run_with_timeout 120 "$VENV_DIR/bin/pip" install --quiet --upgrade pip \
+        >/dev/null 2>&1 || warn "升级 pip 失败，继续使用自带版本"
+
+    # 华为云 DNS SDK 只有在需要下发 DNS 时才用得上。
+    # 用 --no-dns 可以跳过（优选功能完全不受影响）。
+    if [ "${SKIP_DNS_SDK:-0}" = "1" ]; then
+        log "按参数要求跳过华为云 DNS SDK（纯优选模式）"
+        return 0
     fi
+
+    if install_python_packages huaweicloudsdkcore huaweicloudsdkdns; then
+        log "华为云 DNS SDK 安装完成"
+        return 0
+    fi
+
+    # 不致命：优选本身只用标准库 + curl
+    warn "════════════════════════════════════════════════════════════"
+    warn "华为云 DNS SDK 未能安装，但【优选功能不受影响】，安装继续。"
+    warn "影响范围：只影响把结果自动下发到华为云 DNS 这一步。"
+    warn "可以稍后手动补装（国内网络建议指定镜像）："
+    warn "  $VENV_DIR/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \\"
+    warn "      huaweicloudsdkcore huaweicloudsdkdns"
+    warn "或者用环境变量长期指定镜像：export PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple"
+    warn "════════════════════════════════════════════════════════════"
+    return 0
 }
 
 write_service() {
@@ -405,7 +477,13 @@ show_url() {
 
 case "${1:-}" in
     install)
-        [ "${2:-}" = "--yes" ] && ASSUME_YES=1
+        # 支持参数：--yes（非交互）、--no-dns（跳过华为云 SDK，纯优选）
+        for _arg in "$@"; do
+            case "$_arg" in
+                --yes) ASSUME_YES=1 ;;
+                --no-dns) SKIP_DNS_SDK=1 ;;
+            esac
+        done
         need_python; need_curl
         ensure_env
         install_deps
@@ -413,7 +491,7 @@ case "${1:-}" in
         mkdir -p results/history config
         write_service
         log "安装完成。下一步："
-        echo "    1) 编辑 .env 填 HUAWEI_AK / HUAWEI_SK（下发 DNS 必需）"
+        echo "    1) 编辑 .env 填 HUAWEI_AK / HUAWEI_SK（下发 DNS 必需，纯优选可跳过）"
         echo "    2) ./deploy.sh doctor      # 先确认链路可信"
         echo "    3) sudo ./deploy.sh start  # 启动 Web 控制台"
         echo "    4) ./deploy.sh status      # 拿访问地址与令牌"
