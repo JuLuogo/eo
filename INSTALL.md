@@ -21,7 +21,8 @@ curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo s
 - [六、Docker 安装](#六docker-安装最省事推荐)
 - [七、手动安装](#七手动安装不用一键脚本也不装-docker)
 - [八、三台机器分工](#八三台机器联通电信移动怎么部署)
-- [九、常见问题](#九常见问题)
+- [九、境内网络问题](#九境内网络问题github--镜像拉取)
+- [十、常见问题](#十常见问题)
 
 ---
 
@@ -524,7 +525,138 @@ EO_NETWORK=dx EO_WEB_PORT=8788 ./install.sh --yes
 
 ---
 
-## 九、常见问题
+## 九、境内网络问题（GitHub / 镜像拉取）
+
+境内服务器直连 GitHub 与 Docker Hub 经常不稳定，项目里已内置规避手段。
+
+### 9.1 代码获取：Gitee 为主，GitHub 为备
+
+`onekey.sh` 默认从 **Gitee** 拉代码（境内稳定），失败自动切 GitHub，再失败用压缩包：
+
+```bash
+# 默认走 Gitee；想强制 GitHub：
+REPO=https://github.com/JuLuogo/eo.git bash -c "$(curl -fsSL .../onekey.sh)"
+```
+
+| 源 | 地址 |
+| --- | --- |
+| Gitee（境内快） | `https://gitee.com/peroe/eo.git` |
+| GitHub | `https://github.com/JuLuogo/eo.git` |
+| Gitee 压缩包 | `https://gitee.com/peroe/eo/repository/archive/main.tar.gz` |
+| GitHub 压缩包 | `https://github.com/JuLuogo/eo/archive/refs/heads/main.tar.gz` |
+
+### 9.2 脚本/文件下载：走 GitHub 文件代理
+
+`onekey.sh` 内置了实测可用的文件代理，按速度顺序自动尝试：
+
+```
+https://gh-proxy.com/      <- 最快（实测约 360ms）
+https://gh.llkk.cc/        <- 约 460ms
+https://ghproxy.net/       <- 约 830ms
+https://ghfast.top/        <- 约 1500ms
+https://cdn.jsdelivr.net/gh/JuLuogo/eo@main/   <- jsDelivr 兜底
+直连 raw.githubusercontent.com                  <- 最后兜底
+```
+
+用法：在任意 GitHub raw 地址前拼代理前缀即可：
+
+```bash
+curl -fsSL "https://gh-proxy.com/https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh"
+```
+
+> 实测（2026-10）：上述 4 个代理 + jsDelivr + 直连均返回 200；
+> 而 `mirror.ghproxy.com`、`ghproxy.cc`、`raw.gitmirror.com`、`raw.fastgit.org`、
+> `gitclone.com` **已失效**，脚本里没有采用。
+
+### 9.3 容器镜像加速
+
+**方式一：让脚本写入加速配置**（推荐，一次性）
+
+```bash
+SET_REGISTRY_MIRROR=1 DIR=/opt/edge-optimizer EO_NETWORK=lt \
+HUAWEI_AK=... HUAWEI_SK=... \
+bash -c "$(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
+```
+
+它会往 `/etc/docker/daemon.json` 写入并重启 Docker：
+
+```json
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com",
+    "https://docker.1ms.run",
+    "https://hub.rat.dev"
+  ]
+}
+```
+
+**方式二：手动配置**
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com",
+    "https://docker.1ms.run",
+    "https://hub.rat.dev"
+  ]
+}
+EOF
+sudo systemctl restart docker
+docker info | grep -A5 "Registry Mirrors"
+```
+
+**方式三：拉取时直接指定加速地址**（不改配置）
+
+```bash
+docker pull docker.m.daocloud.io/library/python:3.12-slim
+docker tag  docker.m.daocloud.io/library/python:3.12-slim python:3.12-slim
+
+docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+             -t edge-optimizer:latest .
+```
+
+> **关于 GHCR（ghcr.io）**：`ghcr.io` 在境内连通性差，而且它**不是** Docker Hub 镜像，
+> 普通 registry-mirrors **代理不了它**。若拉 `ghcr.io/julugo/eo:latest` 失败，建议：
+> ① 改本机构建（一条命令，见第六节）；② 或把镜像推到国内仓库（见 9.4）。
+
+### 9.4 想彻底避开 GHCR：推到国内镜像仓库
+
+阿里云 / 腾讯云的个人版容器镜像服务都免费，境内拉取很快。以阿里云为例：
+
+```bash
+# 1. 在阿里云「容器镜像服务」创建命名空间与仓库，得到形如
+#    registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo 的地址
+# 2. 在能访问 GitHub 的机器上拉取并转推
+docker pull ghcr.io/julugo/eo:latest
+docker tag  ghcr.io/julugo/eo:latest registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest
+docker login registry.cn-hangzhou.aliyuncs.com
+docker push registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest
+
+# 3. 服务器上直接用国内地址
+USE_GHCR=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest \
+DIR=/opt/edge-optimizer EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
+bash -c "$(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
+```
+
+### 9.5 最省事的组合（完全不用访问 GitHub）
+
+代码走 Gitee、构建走镜像加速：
+
+```bash
+SET_REGISTRY_MIRROR=1 DIR=/opt/edge-optimizer EO_NETWORK=lt EO_WEB_PORT=8787 \
+HUAWEI_AK=... HUAWEI_SK=... \
+bash -c "$(curl -fsSL https://gitee.com/peroe/eo/raw/main/onekey.sh)"
+```
+
+`onekey.sh` 在 Gitee 上也有，所以连脚本本身都不需要从 GitHub 取。
+
+---
+
+## 十、常见问题
 
 **Q：装依赖时报 `ConnectionResetError: [Errno 104] 连接被对方重置`**
 

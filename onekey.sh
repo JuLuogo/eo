@@ -24,13 +24,71 @@
 #   GHCR_TOKEN       GitHub 私人令牌（勾选 read:packages）。GHCR 包为私有时，
 #                    带上它即可自动登录拉取，省去在服务器上手动 docker login
 #   GHCR_USER        GitHub 用户名（默认 JuLuogo）
+#   REPO             代码源，默认 Gitee（境内稳定）；可设为 GitHub 地址
+#   SET_REGISTRY_MIRROR  1 = 写入 /etc/docker/daemon.json 配置国内镜像加速
+#                    （拉基础镜像用；境内建议开）
 set -euo pipefail
 
 DIR="${DIR:-/opt/edge-optimizer}"
-REPO="${REPO:-https://github.com/JuLuogo/eo.git}"
+# 代码源：默认 Gitee（境内稳定）。想走 GitHub 可用
+#   REPO=https://github.com/JuLuogo/eo.git bash -c "$(curl ...)"
+REPO="${REPO:-https://gitee.com/peroe/eo.git}"
 BRANCH="${BRANCH:-main}"
 USE_GHCR="${USE_GHCR:-0}"
 IMAGE="${IMAGE:-ghcr.io/julugo/eo:latest}"
+
+# GitHub 文件代理：境内直连 raw.githubusercontent.com 常失败，这里按实测速度排序，
+# 逐个尝试，全失败才回退直连。用法：<前缀><完整 raw 地址>
+GH_FILE_MIRRORS="
+https://gh-proxy.com/
+https://gh.llkk.cc/
+https://ghproxy.net/
+https://ghfast.top/
+"
+GH_RAW_BASE="https://raw.githubusercontent.com/JuLuogo/eo/${BRANCH}"
+
+# 带代理回退的下载：download <相对路径> <输出文件>
+download_from_github() {
+    local rel="$1" out="$2" prefix
+    for prefix in $GH_FILE_MIRRORS; do
+        if curl -fsSL --connect-timeout 10 --max-time 60 \
+                "${prefix}${GH_RAW_BASE}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+            say "已通过镜像下载 $rel（${prefix%%/*//*}）"
+            return 0
+        fi
+    done
+    # jsDelivr 兜底（直接按仓库路径，不是 raw 前缀形式）
+    if curl -fsSL --connect-timeout 10 --max-time 60 \
+            "https://cdn.jsdelivr.net/gh/JuLuogo/eo@${BRANCH}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+        say "已通过 jsDelivr 下载 $rel"
+        return 0
+    fi
+    if curl -fsSL --connect-timeout 10 --max-time 60 \
+            "${GH_RAW_BASE}/${rel}" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+        say "已直连下载 $rel"
+        return 0
+    fi
+    return 1
+}
+
+# 拉取代码：先试主源，再试备用源（Gitee <-> GitHub 互为备份）
+clone_or_update() {
+    local repo="$1"
+    if [ -d "$DIR/.git" ]; then
+        say "更新已有代码：$DIR（$repo）"
+        git -C "$DIR" remote set-url origin "$repo" 2>/dev/null || true
+        if git -C "$DIR" fetch --quiet origin "$BRANCH" 2>/dev/null; then
+            git -C "$DIR" checkout --quiet "$BRANCH" 2>/dev/null || true
+            git -C "$DIR" merge --ff-only "origin/$BRANCH" --quiet 2>/dev/null || \
+                warn "更新失败，沿用当前版本"
+            return 0
+        fi
+        warn "从 $repo 更新失败，尝试备用源…"
+        return 1
+    fi
+    say "克隆代码：$repo -> $DIR"
+    git clone --quiet --branch "$BRANCH" "$repo" "$DIR" 2>/dev/null
+}
 
 say()  { printf '\033[1;34m[onekey]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
@@ -58,24 +116,82 @@ fi
 say "Docker: $(docker --version)"
 
 # --------------------------------------------------------------------------
-# 2. 拉取/更新代码
+# 1.5 境内网络优化：可选写入 Docker 镜像加速
+#     SET_REGISTRY_MIRROR=1 时把加速器写进 /etc/docker/daemon.json
+#     （拉 python:3.12-slim 这类基础镜像会明显更快/更稳）
+# --------------------------------------------------------------------------
+configure_registry_mirror() {
+    local conf=/etc/docker/daemon.json
+    if [ -f "$conf" ] && grep -q "registry-mirrors" "$conf" 2>/dev/null; then
+        say "已存在 registry-mirrors 配置，跳过"
+        return 0
+    fi
+    say "写入 Docker 镜像加速配置：$conf"
+    mkdir -p /etc/docker
+    cat > "$conf" <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com",
+    "https://docker.1ms.run",
+    "https://hub.rat.dev"
+  ]
+}
+EOF
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl restart docker 2>/dev/null && sleep 3 || \
+            warn "重启 Docker 失败，请手动执行：systemctl restart docker"
+    fi
+    say "镜像加速已配置"
+}
+
+if [ "${SET_REGISTRY_MIRROR:-0}" = "1" ]; then
+    configure_registry_mirror
+fi
+
+# --------------------------------------------------------------------------
+# 2. 拉取/更新代码（主源失败自动换备用源）
 # --------------------------------------------------------------------------
 export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
 if [ -f "./run.py" ] && [ -f "./docker-compose.yml" ]; then
     say "当前目录已是项目根目录"
     DIR="$(pwd)"
 else
+    command -v git >/dev/null 2>&1 || die "需要 git 拉取代码，请先安装 git
+    （或者直接把项目解压到 $DIR 后，在该目录里重新执行本脚本）"
+    mkdir -p "$(dirname "$DIR")"
+
     if [ -d "$DIR/.git" ]; then
-        say "更新已有代码：$DIR"
-        git -C "$DIR" fetch --quiet origin "$BRANCH" 2>/dev/null || true
-        git -C "$DIR" checkout --quiet "$BRANCH" 2>/dev/null || true
-        git -C "$DIR" pull --ff-only --quiet origin "$BRANCH" 2>/dev/null || \
-            warn "更新失败，沿用当前版本"
+        clone_or_update "$REPO" || clone_or_update "$REPO_FALLBACK" || \
+            warn "两个源都更新失败，沿用当前版本"
     else
-        command -v git >/dev/null 2>&1 || die "需要 git 拉取代码，请先安装 git"
-        say "拉取代码到 $DIR"
-        mkdir -p "$(dirname "$DIR")"
-        git clone --quiet --branch "$BRANCH" "$REPO" "$DIR" || die "拉取失败：$REPO"
+        # 主源（默认 Gitee）
+        if ! clone_or_update "$REPO"; then
+            warn "从 $REPO 拉取失败，尝试备用源…"
+            rm -rf "$DIR"
+            if ! clone_or_update "$REPO_FALLBACK"; then
+                rm -rf "$DIR"
+                # 最后兜底：压缩包（Gitee / GitHub 的归档）
+                say "git 拉取都失败，改用压缩包下载…"
+                mkdir -p "$DIR"
+                ok=0
+                for u in \
+                    "https://gitee.com/peroe/eo/repository/archive/${BRANCH}.tar.gz" \
+                    "https://github.com/JuLuogo/eo/archive/refs/heads/${BRANCH}.tar.gz"
+                do
+                    if curl -fL --connect-timeout 15 --max-time 300 "$u" -o /tmp/eo-src.tar.gz 2>/dev/null \
+                       && tar xzf /tmp/eo-src.tar.gz -C "$DIR" --strip-components=1 2>/dev/null; then
+                        rm -f /tmp/eo-src.tar.gz
+                        say "已通过压缩包获取代码：$u"
+                        ok=1
+                        break
+                    fi
+                done
+                [ "$ok" = "1" ] || die "代码获取失败。请手动下载后放到 $DIR 再执行本脚本：
+    Gitee  : https://gitee.com/peroe/eo
+    GitHub : https://github.com/JuLuogo/eo"
+            fi
+        fi
     fi
 fi
 cd "$DIR"
