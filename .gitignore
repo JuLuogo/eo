@@ -6,6 +6,8 @@ results/
 *.log
 *.bak
 _*.py
+_*.sh
+_*.txt
 
 # Python
 __pycache__/
