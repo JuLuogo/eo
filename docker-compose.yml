@@ -20,8 +20,12 @@ services:
         # 国内拉不动基础镜像时，取消下面一行的注释（或用 docker-setup.sh 自动处理）
         # BASE_IMAGE: docker.m.daocloud.io/library/python:3.12-slim
         PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        # apt 源：默认阿里云。境内直连 deb.debian.org 常失败，需要官方源时改成 deb.debian.org
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
         # INSTALL_DNS_SDK: "0"     # 纯优选（不装华为云 SDK），构建更快
-    image: edge-optimizer:latest
+    # 镜像名：默认本地构建产物；用 GHCR 现成镜像时会被 onekey.sh 覆盖为
+    # ghcr.io/julugo/eo:latest（并配合 --no-build 跳过构建）
+    image: ${EO_IMAGE:-edge-optimizer:latest}
     container_name: edge-optimizer
     restart: unless-stopped
     env_file:

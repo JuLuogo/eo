@@ -143,9 +143,19 @@ fi
 # --------------------------------------------------------------------------
 if [ "$USE_GHCR" = "1" ]; then
     say "从 GHCR 拉取现成镜像：$IMAGE"
-    docker pull "$IMAGE" || die "拉取失败。若镜像是私有的，先执行：echo <你的GitHub令牌> | docker login ghcr.io -u <用户名> --password-stdin"
+    if ! docker pull "$IMAGE"; then
+        warn "拉取失败。GHCR 的包默认是【私有】的，两种解决方式："
+        warn "  A) 到 GitHub 把包改成公开（一次性，之后免登录）："
+        warn "     仓库页 -> 右侧 Packages -> eo -> Package settings"
+        warn "     -> Danger Zone -> Change package visibility -> Public"
+        warn "  B) 保持私有，先登录再拉（需要一个 GitHub 私人令牌，勾选 read:packages）："
+        warn "     echo <你的GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin"
+        warn "或改用本机构建（去掉 USE_GHCR=1 即可）。"
+        exit 1
+    fi
     docker tag "$IMAGE" edge-optimizer:latest
-    $COMPOSE up -d --no-build
+    # 强制用拉下来的镜像，绝不触发本地构建
+    EO_IMAGE="edge-optimizer:latest" $COMPOSE up -d --no-build
 else
     say "本机构建并启动（首次约 2~5 分钟）…"
     $COMPOSE up -d --build
