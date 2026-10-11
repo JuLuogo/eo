@@ -391,7 +391,36 @@ docker compose run --rm optimizer dns-check -p eo-lt     # 只读查看 DNS 解�
 docker compose run --rm optimizer logs-save              # （容器内无 journalctl，日志看 compose）
 ```
 
-### 7.4 国内网络优化（拉不动基础镜像时）
+### 7.4 挂载目录权限（已自动处理，无需手动干预）
+
+容器启动时会以 root 修正 `config/`、`results/` 的归属，再**降权到非 root 用户**
+（UID 10001）执行程序。原因：`deploy.sh` / `onekey.sh` 都以 root 创建这两个目录，
+若直接以非 root 启动，会因无法写入而立即崩溃：
+
+```
+PermissionError: [Errno 13] Permission denied: '/app/config/config.tmp'
+```
+
+**所以不需要手动 chown。** 副作用是宿主机上这两个目录的属主变为 `10001:10001`
+（容器内用户），直接 `ls` 看不到内容、需要 sudo —— 这是正常现象。
+
+想改变这个行为，可在 `docker-compose.yml` 里调整：
+
+```yaml
+services:
+  optimizer:
+    environment:
+      EO_APP_UID: "1000"     # 改成与宿主机你的用户 UID 一致
+      EO_APP_GID: "1000"
+```
+
+或者让容器内以 root 运行（会失去非 root 的安全边界，不推荐）：
+
+```yaml
+    user: "0:0"
+```
+
+### 7.5 国内网络优化（拉不动基础镜像时）
 
 基础镜像 `python:3.12-slim` 默认从 Docker Hub 拉，境内可能很慢或失败。两种办法：
 
@@ -423,14 +452,14 @@ docker compose up -d          # 镜像已存在，直接启动
 > Dockerfile 里的 pip 源**默认已用清华镜像**，所以不会再出现你之前那种
 > `ConnectionResetError`。想换源可以 `--build-arg PIP_INDEX=...`。
 
-### 7.5 不想装华为云 SDK（纯优选）
+### 7.6 不想装华为云 SDK（纯优选）
 
 ```bash
 docker build --build-arg INSTALL_DNS_SDK=0 -t edge-optimizer:latest .
 # 或在 compose 的 build.args 里加 INSTALL_DNS_SDK: "0"
 ```
 
-### 7.6 Docker 卸载
+### 7.7 Docker 卸载
 
 ```bash
 cd /opt/edge-optimizer
@@ -439,7 +468,7 @@ docker rmi edge-optimizer:latest     # 删镜像
 sudo rm -rf /opt/edge-optimizer      # 删目录（含 config/ results/ .env）
 ```
 
-### 7.7 三台机器用 Docker
+### 7.8 三台机器用 Docker
 
 每台机器 `./docker-setup.sh` 时选自己那个运营商即可（端口也自动错开）。
 如果想**只构建一次、三台共用**，可以把镜像导出再传过去：
