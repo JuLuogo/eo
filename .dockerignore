@@ -1,6 +1,5 @@
-# 镜像构建时排除的文件：密钥、结果、临时产物都不要进镜像
-# 注意：Dockerfile 里 COPY 的文件绝不能出现在这里，否则构建会直接失败。
-# （此前第一行是乱码，可能影响模式解析）
+# Files excluded from the Docker build context.
+# IMPORTANT: never list files that the Dockerfile COPYs, or the build fails.
 .env
 .env.*
 !.env.example
@@ -26,3 +25,4 @@ yes.txt
 eo.txt
 targets/_*
 docker-compose.yml
+_edge-optimizer.tar.gz
