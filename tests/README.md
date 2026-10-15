@@ -48,13 +48,17 @@ pip install pytest && pytest tests/ -v
 bash tests/docker_integration.sh
 ```
 
-在本机构建镜像、起容器、跑一轮真实扫描，测试完自动删除容器。
-需要本机可拉取基础镜像（境内可先 `SET_REGISTRY_MIRROR=1` 或用 `docker.1ms.run` 等加速）。
+在本机构建镜像、起容器、跑一轮真实扫描，测试完自动删除容器、镜像与临时目录。
+脚本用自身位置推导仓库根，在任意目录都能执行。需要本机可拉取基础镜像
+（境内可先 `SET_REGISTRY_MIRROR=1`，脚本也会自动尝试 `docker.1ms.run` 等加速源）。
 
 ## 说明
 
-* `test_frontend_static.py` 会尝试调用 `node --check` 校验页面 JS；没有 node 时自动跳过该步
-  （其余检查照常执行）。Windows 上会自动找 `D:\app\ndejs\node.exe` 之类的常见位置。
+* `test_frontend_static.py` 会调用 `node --check` 校验页面内嵌 JS 的语法；没有 node 时自动跳过该步
+  （其余检查照常执行）。查找顺序：环境变量 `NODE_BIN` → `PATH` 里的 `node`/`nodejs` →
+  常见位置（`/usr/local/bin/node`、WSL 下各盘符 `/mnt/<盘>/Program Files/nodejs/node.exe` 等）。
+  想强制启用就 `NODE_BIN=/path/to/node python3 tests/test_frontend_static.py`。
+  该步自带反向自测：会用一段故意写错的 JS 确认校验器真的能报错，避免「永远通过」的假绿。
 * `test_web_console.py` 会在本地起一个临时 Web 服务（端口 18801）并自动关闭。
 * `test_cli_e2e.py` 会真的调用 `run.py`，结果文件写在仓库的 `results/`（已被 gitignore）；
   用 `--no-write` 的用例不落盘。

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -43,23 +44,72 @@ print(f"\nHTML {len(html_part)} 字节，JS {len(js)} 字节（{len(scripts)} �
 check("页面含内联脚本", bool(scripts), f"{len(scripts)} 块")
 
 # ---------------------------------------------------------------- 1. 语法
+
+
+def find_node() -> str | None:
+    """定位 node：NODE_BIN > PATH > 常见安装位置（含 WSL 下调用 Windows 版）。"""
+    node = os.environ.get("NODE_BIN") or shutil.which("node") or shutil.which("nodejs")
+    if node:
+        return node
+    cands = ["/usr/local/bin/node", "/opt/node/bin/node", "/snap/bin/node"]
+    for drive in "cdefg":
+        cands += [f"/mnt/{drive}/Program Files/nodejs/node.exe",
+                  f"/mnt/{drive}/nodejs/node.exe",
+                  f"/mnt/{drive}/app/ndejs/node.exe"]
+    for cand in cands:
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def js_syntax(node: str, source: str) -> tuple[bool, str]:
+    """用 node --check 校验 JS 语法，返回 (是否通过, 错误说明)。"""
+    # 优先用 stdin：node --check - 不落盘，也不受「WSL 调用 Windows 版 node.exe
+    # 时 Linux 路径无法解析」的影响（Windows node 会把 /tmp/x.js 当成 C:\tmp\x.js）
+    proc = subprocess.run([node, "--check", "-"], input=source,
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        # 兼容不支持 `-` 的旧版 node：退回临时文件方式
+        tmp = Path(tempfile.mkdtemp()) / "page.js"
+        tmp.write_text(source, encoding="utf-8")
+        target = str(tmp)
+        wslpath = shutil.which("wslpath")
+        if node.endswith(".exe") and wslpath:
+            conv = subprocess.run([wslpath, "-w", target], capture_output=True, text=True)
+            if conv.returncode == 0 and conv.stdout.strip():
+                target = conv.stdout.strip()
+        alt = subprocess.run([node, "--check", target], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+        if alt.returncode == 0:
+            return True, "node --check 通过（文件模式）"
+
+    if proc.returncode == 0:
+        return True, "node --check 通过"
+
+    # node 的 stderr 末行往往是版本号，优先摘出真正的错误行
+    lines = [l.rstrip() for l in (proc.stderr or "").splitlines() if l.strip()]
+    detail = next((l for l in lines if "Error" in l), None) \
+        or (lines[-1] if lines else "node --check 失败")
+    idx = next((i for i, l in enumerate(lines) if "Error" in l), None)
+    if idx is not None and idx > 0 and not lines[idx - 1].lstrip().startswith("^"):
+        detail = f"{lines[idx - 1].strip()} -> {detail}"
+    return False, detail
+
+
 print()
 print("1) JS 语法（node --check）")
-node = shutil.which("node") or shutil.which("nodejs")
-if not node:
-    # Windows 侧常见位置（WSL 里通过 /mnt 调用）
-    for cand in ("/mnt/d/app/ndejs/node.exe", "/mnt/c/Program Files/nodejs/node.exe"):
-        if Path(cand).exists():
-            node = cand
-            break
+node = find_node()
 if node:
-    tmp = Path(tempfile.mkdtemp()) / "page.js"
-    tmp.write_text(js, encoding="utf-8")
-    proc = subprocess.run([node, "--check", str(tmp)], capture_output=True, text=True)
-    check("JS 语法正确", proc.returncode == 0,
-          (proc.stderr or "").strip().splitlines()[-1] if proc.returncode else "node --check 通过")
+    print(f"     使用 node: {node}")
+    ok_js, detail = js_syntax(node, js)
+    check("JS 语法正确", ok_js, detail)
+    # 反向自测：校验器必须能抓到故意写错的 JS，否则上面的 OK 没有意义
+    bad_ok, _ = js_syntax(node, "function broken( { return 1; }")
+    check("校验器能发现语法错误（自测）", not bad_ok, "故意写错的 JS 被正确判为不通过")
 else:
-    print("  [SKIP] 未找到 node，跳过语法校验（建议装 node 后再跑）")
+    print("  [SKIP] 未找到 node，跳过语法校验（可用 NODE_BIN=/path/to/node 指定，或安装 node）")
+
 
 # ---------------------------------------------------------------- 2. 元素 id
 print()
