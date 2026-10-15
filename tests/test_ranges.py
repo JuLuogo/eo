@@ -9,8 +9,10 @@
 """
 from __future__ import annotations
 
+import atexit
 import io
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -129,7 +131,8 @@ except KeyError as exc:
 # ------------------------------------------------------------------ 4. 写文件
 print()
 print("4) update_targets_file 写文件")
-tmp = Path(tempfile.mkdtemp())
+tmp = Path(tempfile.mkdtemp(prefix="eo-ranges-"))
+atexit.register(shutil.rmtree, tmp, ignore_errors=True)
 calls, orig = patch_urlopen(ranges, {"ip-ranges.amazonaws.com": aws_data})
 try:
     n = ranges.update_targets_file("cloudfront", tmp / "cft.txt", log=lambda _: None)

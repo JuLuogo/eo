@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,6 +44,8 @@ print("CLI 端到端测试")
 print("=" * 70)
 
 work = Path(tempfile.mkdtemp(prefix="eo-cli-"))
+# 退出时（无论成功失败）都删掉临时目录，别在服务器 /tmp 里越堆越多
+atexit.register(shutil.rmtree, work, ignore_errors=True)
 tiny = work / "tiny.txt"
 tiny.write_text("\n".join(f"192.0.2.{i}" for i in range(1, 9)) + "\n", encoding="utf-8")
 print(f"\n临时目录: {work}")

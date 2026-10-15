@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import shutil
@@ -71,7 +72,9 @@ def js_syntax(node: str, source: str) -> tuple[bool, str]:
                           encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         # 兼容不支持 `-` 的旧版 node：退回临时文件方式
-        tmp = Path(tempfile.mkdtemp()) / "page.js"
+        tmpdir = Path(tempfile.mkdtemp(prefix="eo-jscheck-"))
+        atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
+        tmp = tmpdir / "page.js"
         tmp.write_text(source, encoding="utf-8")
         target = str(tmp)
         wslpath = shutil.which("wslpath")

@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -75,6 +77,7 @@ print("Web 控制台全功能测试（修正断言版）")
 print("=" * 70)
 
 cfgdir = Path(tempfile.mkdtemp(prefix="eo-web2-"))
+atexit.register(shutil.rmtree, cfgdir, ignore_errors=True)
 cfgp = cfgdir / "config.json"
 os.environ["EO_WEB_TOKEN"] = TOKEN
 os.environ["EO_PLATFORMS"] = "eo-lt,cft-lt"

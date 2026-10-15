@@ -2,7 +2,9 @@
 """三运营商（联通/电信/移动）平台配置专项测试。"""
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -146,7 +148,9 @@ os.environ["EO_NETWORK"] = "yd"
 os.environ.pop("EO_PLATFORMS", None)
 fresh()
 from eo.webui import make_service          # noqa: E402
-svc = make_service(Path(tempfile.mkdtemp()) / "c.json")
+_cfg_dir = Path(tempfile.mkdtemp(prefix="eo-carriers-"))
+atexit.register(shutil.rmtree, _cfg_dir, ignore_errors=True)
+svc = make_service(_cfg_dir / "c.json")
 bp = svc.build_platforms()
 check("EO_NETWORK=yd 时 Web 启用移动三件套",
       sorted(p.key for p in bp if p.enabled) == ["cft-yd", "eo-yd", "esa-yd"],
