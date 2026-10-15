@@ -135,6 +135,14 @@ def run_once(
 
     # 链路可信度检查：本机若有代理/透明网关接管 HTTPS，钉 IP 探测会全部「可用」
     if not config.skip_check:
+        # 先上报阶段：这一步要对每个平台做真实网络探测，可能耗时十几秒，
+        # 否则网页会长时间停在「无进度」的状态，让人以为卡死。
+        emit({"type": "progress", "phase": "checking", "done": 0, "total": 0,
+              "platforms": {p.key: {"name": p.name, "total": 0, "done": 0, "alive": 0}
+                            for p in platforms}})
+        emit({"type": "log",
+              "line": f"正在检查链路可信度（{len(platforms)} 个平台，"
+                      f"每个平台探测 2 个保留地址）…"})
         pending = []
         for platform in platforms:
             pending.append((platform, None))
@@ -255,15 +263,24 @@ def run_once(
     # 全部平台都失败时，这是配置问题（如网段文件缺失），必须显式报错。
     # 否则日志里只有一行 ⚠，容易被误解为"该平台扫不到可用节点"。
     if results and all(o.error for o, _ in results):
+        stopped = all("停止" in (o.error or "") for o, _ in results)
         log_error("")
         log_error("=" * 62)
-        log_error(f"✗ 本轮全部 {len(results)} 个平台均扫描失败 "
-                  f"—— 这是配置问题，不是「没有可用节点」")
-        for outcome, _ in results:
-            log_error(f"  - {outcome.platform.key}: {outcome.error}")
-        log_error("  请按上面的提示补齐网段文件后重试（run.py list 可查看各平台期望的文件）")
+        if stopped:
+            # 用户主动停止不是故障，不要给出"补齐网段文件"这种误导性建议
+            log_error("本轮已被手动停止，没有产出结果（这是正常的，不是故障）")
+            for outcome, _ in results:
+                log_error(f"  - {outcome.platform.key}: {outcome.error}")
+        else:
+            log_error(f"✗ 本轮全部 {len(results)} 个平台均扫描失败 "
+                      f"—— 这是配置问题，不是「没有可用节点」")
+            for outcome, _ in results:
+                log_error(f"  - {outcome.platform.key}: {outcome.error}")
+            log_error("  请按上面的提示补齐网段文件后重试"
+                      "（run.py list 可查看各平台期望的文件）")
         log_error("=" * 62)
-        emit({"type": "error", "scope": "all-platforms-failed",
+        emit({"type": "error",
+              "scope": "stopped" if stopped else "all-platforms-failed",
               "errors": {o.platform.key: o.error for o, _ in results}})
 
     # DNS 下发
@@ -357,12 +374,23 @@ class CycleRunner:
         return self._thread is not None and self._thread.is_alive()
 
     def snapshot(self) -> dict:
+        # configured_interval：网页上当前配置的间隔。
+        # 与 interval（本轮实际使用的）区分开：改了间隔要下一轮才生效，
+        # 若只显示 interval，用户会以为设置没生效。
+        configured = 0
+        if self._settings is not None:
+            try:
+                latest = self._settings() or {}
+                configured = int(latest.get("interval") or 0)
+            except Exception:                 # pragma: no cover - 配置异常不影响状态
+                configured = 0
         return {
             "state": self.state,
             "cycle": self.cycle,
             "running": self.running,
             "manual": self.manual,
             "interval": self.current_interval,
+            "configured_interval": configured,
             "last_error": self.last_error,
             "next_run_at": int(self.next_run_at),
             "now": int(time.time()),

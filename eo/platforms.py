@@ -206,13 +206,43 @@ PLATFORMS.update(_carrier_variants(
 ))
 
 
+NETWORKS = ("lt", "dx", "yd")           # 联通 / 电信 / 移动
+SERVICES = ("eo", "esa", "cft")         # 各平台的基础 key
+
+
+def env_platform_keys() -> list[str]:
+    """按环境变量决定「这台机器该跑哪些平台」。
+
+    优先级：
+      1. EO_PLATFORMS —— 显式列表（deploy.sh / onekey.sh 会写入），
+         例如 ``eo-lt,esa-lt,cft-lt``；
+      2. EO_NETWORK   —— 本机运营商（lt/dx/yd），推导出该运营商的 3 个变体；
+      3. 都没有       —— 返回空列表，由调用方回退到代码里的默认启用项。
+
+    为什么需要第 2 条：EO_NETWORK 是「这台机器是谁」的声明。若只认
+    EO_PLATFORMS，那么有人在 .env 里只改了 EO_NETWORK=dx（很自然的做法），
+    程序仍会去跑默认的联通平台 —— 在电信机器上测联通节点毫无意义。
+    """
+    raw = (os.environ.get("EO_PLATFORMS") or "").strip()
+    if raw:
+        return [k.strip() for k in raw.replace(",", " ").split() if k.strip()]
+    carrier = (os.environ.get("EO_NETWORK") or "").strip().lower()
+    if carrier in NETWORKS:
+        return [f"{svc}-{carrier}" for svc in SERVICES]
+    return []
+
+
 def get_platforms(keys: list[str] | None = None, include_disabled: bool = False,
                   networks: list[str] | None = None) -> list[Platform]:
     """按 key / 运营商取平台。
 
     keys 为空表示全部（默认只取启用的）；networks 用于按运营商筛选，
     例如 networks=["lt"] 只取联通那一套。
+    两者都未指定时会参考 EO_PLATFORMS / EO_NETWORK（见 env_platform_keys）。
     """
+    if not keys and not networks and not include_disabled:
+        keys = env_platform_keys() or None
+
     if keys:
         unknown = [k for k in keys if k not in PLATFORMS]
         if unknown:

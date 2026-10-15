@@ -23,7 +23,7 @@ from .config_store import DEFAULT_CONFIG_PATH
 # 面板要展示的常用变量：key -> (中文名, 单位/说明, 是否敏感)
 COMMON_VARS = [
     ("rate",        "并发连接上限",   "全平台合计，连接/秒；0 = 不限速"),
-    ("interval",    "轮询间隔",       "秒；改完下一轮生效"),
+    ("interval",    "轮询间隔",       "秒；循环模式下最小 60 秒；改完下一轮生效"),
     ("window",      "时间窗口",       "如 00:00-07:00，留空 = 全天"),
     ("workers",     "单平台并发数",   "每个平台同时发起的探测线程数"),
     ("timeout",     "单次探测超时",   "秒"),
@@ -68,6 +68,7 @@ class VarView:
     web_value: object
     effective: object
     source: str          # default / env / web
+    env_origin: str = ""  # 环境变量的具体来源（进程环境变量 / 项目 .env 文件）
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +80,7 @@ class VarView:
             "web_value": self.web_value,
             "effective": self.effective,
             "source": self.source,
+            "env_origin": self.env_origin,
             "env_key": ENV_MAP.get(self.key, ""),
         }
 
@@ -121,7 +123,16 @@ def vars_view(config, env_path: Path | None = None,
     result: list[VarView] = []
     for key, label, note in COMMON_VARS:
         env_key = ENV_MAP.get(key, "")
-        env_value = env_values.get(env_key, "")
+        file_value = env_values.get(env_key, "")
+        # 进程环境变量同样算「环境变量层」：Docker / systemd 正是用 env 注入的，
+        # 此时容器里并没有 .env 文件，只看文件会把生效值误标成「默认值」，
+        # 恰好毁掉这个面板存在的意义。
+        # 注意 load_dotenv() 已把 .env 载入 os.environ（进程已有的优先），
+        # 所以 os.environ 覆盖两种来源。
+        proc_value = os.environ.get(env_key, "") if env_key else ""
+        env_value = proc_value or file_value
+        env_origin = ("进程环境变量" if proc_value else
+                      ("项目 .env 文件" if file_value else ""))
         web_value = web_raw.get(key, "") if key in explicit else ""
         effective = getattr(config, key, None)
         if key in explicit:
@@ -139,6 +150,7 @@ def vars_view(config, env_path: Path | None = None,
             web_value=web_value,
             effective=effective,
             source=source,
+            env_origin=env_origin,
         ))
     return [view.to_dict() for view in result]
 

@@ -80,7 +80,18 @@ Docker 卸载、手动彻底清理）。
 
 更多见 [INSTALL.md 常见问题](INSTALL.md)。
 
-Docker 方式见 [INSTALL.md 第三节](INSTALL.md)。
+### 自检与回归测试
+
+```bash
+python run.py selftest       # 离线自检（不需要网络，14 项）
+python tests/run_all.py      # 跑全部回归套件（限速/日志/调度/运营商/Web）
+```
+
+`tests/` 覆盖：**每秒连接上限**、**日志 500 条环形缓冲**、**调度与间隔热更新**、
+**三运营商配置**、**Web 控制台全接口**。测试全部使用保留地址与本地服务，
+不会真的去扫线上节点、也不会改任何 DNS 解析。详见 [tests/README.md](tests/README.md)。
+
+Docker 方式见 [INSTALL.md 第六节](INSTALL.md)。
 
 ---
 

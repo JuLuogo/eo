@@ -10,6 +10,7 @@
 # 全部可用环境变量（除密钥外都有默认值）：
 #   HUAWEI_AK        华为云 AccessKey ID（下发 DNS 必需）
 #   HUAWEI_SK        华为云 AccessKey Secret
+#   （重跑时若不传密钥/端口/令牌，会沿用 .env 里已保存的值，不会被清空）
 #   EO_NETWORK       本机运营商：lt=联通 / dx=电信 / yd=移动（默认自动识别）
 #   EO_WEB_PORT      Web 端口（默认按运营商：lt=8787 dx=8788 yd=8789）
 #   EO_RATE          全平台合计连接上限，连接/秒（默认 100）
@@ -222,15 +223,39 @@ case "$CARRIER" in lt|dx|yd) : ;; *) die "EO_NETWORK 只能是 lt / dx / yd，�
 
 # --------------------------------------------------------------------------
 # 4. 写 .env
+#    重跑时保留已有值：这里用 cat > .env 整份重写，若不先读回旧值，
+#    「不传 HUAWEI_AK 再跑一次（例如只是升级镜像）」就会把上次保存的
+#    密钥与访问令牌一起清掉。
 # --------------------------------------------------------------------------
+env_peek() {
+    # 读取现有 .env 里的某个键（去引号、去行尾注释）
+    local key="$1" line
+    [ -f .env ] || return 0
+    line="$(grep -E "^${key}=" .env 2>/dev/null | tail -1)" || return 0
+    [ -n "$line" ] || return 0
+    line="${line#*=}"
+    case "$line" in
+        *" #"*) line="${line%% \#*}" ;;
+    esac
+    printf '%s' "$line" | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//'
+}
+
 case "$CARRIER" in dx) DEF_PORT=8788 ;; yd) DEF_PORT=8789 ;; *) DEF_PORT=8787 ;; esac
-PORT="${EO_WEB_PORT:-$DEF_PORT}"
+OLD_PORT="$(env_peek EO_WEB_PORT)"
+PORT="${EO_WEB_PORT:-${OLD_PORT:-$DEF_PORT}}"
 case "$PORT" in ''|*[!0-9]*) die "EO_WEB_PORT 必须是数字，收到：$PORT" ;; esac
 
-TOKEN="${EO_WEB_TOKEN:-}"
+TOKEN="${EO_WEB_TOKEN:-$(env_peek EO_WEB_TOKEN)}"
 if [ -z "$TOKEN" ]; then
     TOKEN="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
 fi
+
+# 密钥优先用本次传入的，其次沿用 .env 里已有的
+AK="${HUAWEI_AK:-$(env_peek HUAWEI_AK)}"
+SK="${HUAWEI_SK:-$(env_peek HUAWEI_SK)}"
+REGION="${HUAWEI_REGION:-$(env_peek HUAWEI_REGION)}"
+REGION="${REGION:-cn-north-4}"
+OLD_DNS="$(env_peek EO_DNS_SYNC)"
 
 cat > .env <<EOF
 # 由 onekey.sh 生成：$(date '+%Y-%m-%d %H:%M:%S')
@@ -241,18 +266,18 @@ EO_PLATFORMS=eo-$CARRIER,esa-$CARRIER,cft-$CARRIER
 EO_RATE=${EO_RATE:-100}
 EO_INTERVAL=${EO_INTERVAL:-300}
 EO_WINDOW=${EO_WINDOW:-}
-EO_DNS_SYNC=${EO_DNS_SYNC:-dry-run}
+EO_DNS_SYNC=${EO_DNS_SYNC:-${OLD_DNS:-dry-run}}
 EO_CONFIRM_DNS=${EO_CONFIRM_DNS:-no}
-HUAWEI_AK=${HUAWEI_AK:-}
-HUAWEI_SK=${HUAWEI_SK:-}
-HUAWEI_REGION=${HUAWEI_REGION:-cn-north-4}
+HUAWEI_AK=$AK
+HUAWEI_SK=$SK
+HUAWEI_REGION=$REGION
 EOF
 [ -n "${EO_WEBHOOK:-}" ] && echo "EO_WEBHOOK=$EO_WEBHOOK" >> .env
 chmod 600 .env
 mkdir -p config results/history
 
-say "配置完成：运营商=$(carrier_label "$CARRIER")  端口=$PORT  DNS模式=${EO_DNS_SYNC:-dry-run}"
-if [ -z "${HUAWEI_AK:-}" ]; then
+say "配置完成：运营商=$(carrier_label "$CARRIER")  端口=$PORT  DNS模式=$(env_peek EO_DNS_SYNC)"
+if [ -z "$AK" ]; then
     warn "未提供 HUAWEI_AK / HUAWEI_SK —— 优选可用，但无法自动下发 DNS"
 fi
 

@@ -354,10 +354,12 @@ async function pollLogs(){
 }
 
 /* ---------------- 常用变量面板 ---------------- */
-function srcTag(source){
-  const map = {web: ['网页设置', 'ok'], env: ['.env', ''], default: ['默认值', 'off']};
+function srcTag(source, origin){
+  const map = {web: ['网页设置', 'ok'], env: ['环境变量', ''], default: ['默认值', 'off']};
   const [label, cls] = map[source] || ['?', ''];
-  return '<span class="tag ' + cls + '">' + label + '</span>';
+  // 环境变量再区分来源：Docker / systemd 是注入到进程环境的，容器里并没有 .env 文件
+  const tip = origin ? ' title="' + esc(origin) + '"' : '';
+  return '<span class="tag ' + cls + '"' + tip + '>' + label + '</span>';
 }
 function fmtVal(v){
   if (v === '' || v === null || v === undefined) return '<span style="color:#4b5563">—</span>';
@@ -368,13 +370,13 @@ function fmtVal(v){
 async function loadVars(){
   const data = await api('/api/vars');
   const tbody = document.getElementById('vars-table');
-  let html = '<tr><th>变量</th><th>当前生效值</th><th>来源</th><th>在 .env 里</th><th>在网页里</th></tr>';
+  let html = '<tr><th>变量</th><th>当前生效值</th><th>来源</th><th>环境变量里的值</th><th>在网页里</th></tr>';
   data.vars.forEach(v=>{
     html += '<tr>' +
       '<td><b>' + esc(v.label) + '</b><br><span class="hint">' + esc(v.key) +
         (v.env_key ? ' · ' + esc(v.env_key) : '') + '</span></td>' +
       '<td><b>' + fmtVal(v.effective) + '</b></td>' +
-      '<td>' + srcTag(v.source) + '</td>' +
+      '<td>' + srcTag(v.source, v.env_origin) + '</td>' +
       '<td>' + fmtVal(v.env_value) + '</td>' +
       '<td>' + fmtVal(v.web_value) + '</td>' +
       '</tr>';
@@ -448,7 +450,11 @@ function renderStatus(st){
   setText('t-state', stateText);
   setText('t-kind', r.manual ? '手动触发的一次性任务' : (r.running ? '循环任务（定时）' : '无'));
   setText('t-cycle', (r.cycle || 0) + ' 轮');
-  setText('t-interval', r.interval ? (r.interval + ' 秒') : '—');
+  // 间隔：本轮实际用的 vs 网页上新配的（改了要下一轮生效，这里明确标出来）
+  const ci = r.configured_interval || 0;
+  setText('t-interval', r.interval
+    ? (r.interval + ' 秒' + (ci && ci !== r.interval ? '（下轮 ' + ci + ' 秒）' : ''))
+    : '—');
   setText('t-last', fmtTime(st.last_finished_at || LAST_STATE_AT));
   setText('t-next', fmtTime(r.next_run_at));
   const win = (CONFIG && CONFIG.window) || '';
@@ -458,7 +464,9 @@ function renderStatus(st){
   setText('p-sched', r.next_run_at ? ('下轮 ' + fmtTime(r.next_run_at)) : (r.running ? '运行中' : '已停止'));
 
   const cd = r.next_run_at ? Math.max(0, r.next_run_at - Math.floor(Date.now()/1000)) : -1;
-  setText('t-countdown', r.next_run_at ? fmtCountdown(cd) : '—');
+  // 本轮进行中时倒计时没有意义（结束时间不可预知），明确显示「本轮进行中」
+  setText('t-countdown', r.next_run_at ? fmtCountdown(cd)
+                         : (r.state === 'running' ? '本轮进行中' : '—'));
 
   document.getElementById('p-cycle').textContent = '第 ' + (r.cycle||0) + ' 轮';
   document.getElementById('p-next').textContent = r.next_run_at

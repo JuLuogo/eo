@@ -26,10 +26,14 @@ from urllib.parse import parse_qs, urlparse
 
 from .config_store import AppConfig, ConfigStore, PlatformSettings
 from .core import Platform, network_label, safe_log
-from .platforms import PLATFORMS
+from .platforms import PLATFORMS, env_platform_keys
 from .runner import CycleRunner, RunConfig, run_once
 
 DEFAULT_LOG_LINES = 500
+
+# 循环模式的最小轮询间隔：低于这个值会把出口带宽与 NAT 会话表打爆，
+# 因此即使网页上填了更小的值也按此执行（并明确提示，不静默截断）。
+MIN_LOOP_INTERVAL = 60
 
 
 # --------------------------------------------------------------------------
@@ -117,25 +121,27 @@ class OptimizerService:
 
     # ---- 平台构造 ----
     def _env_platform_keys(self) -> list[str]:
-        """读取 EO_PLATFORMS 环境变量（web 模式下同样生效）。
+        """读取环境变量决定要跑哪些平台（web 模式下同样生效）。
 
-        支持逗号或空格分隔，例如 "eo-lt,esa-lt" 或 "eo-lt esa-lt"。
-        空值表示不过滤（跑全部已启用平台）。
+        规则与 CLI 一致，见 platforms.env_platform_keys：
+        EO_PLATFORMS 优先，其次 EO_NETWORK（本机运营商），都没有则返回空。
         """
-        raw = os.environ.get("EO_PLATFORMS", "").strip()
-        if not raw:
-            return []
-        return [k.strip() for k in raw.replace(",", " ").split() if k.strip()]
+        return env_platform_keys()
 
     def build_platforms(self, keys: list[str] | None = None) -> list[Platform]:
         """把代码里的平台定义与网页上的覆盖配置合并。
 
-        keys 为空时回退到 EO_PLATFORMS 环境变量（容器部署常用），
+        keys 为空时回退到 EO_PLATFORMS / EO_NETWORK（容器部署常用），
         两者都没有则返回全部平台。
+
+        enabled 的优先级：网页上的显式设置 > 环境变量点名 > 代码默认。
+        这样「只设了 EO_NETWORK=dx」也能直接跑起来 —— 否则 dx 变体在代码里
+        默认是关的，会得到「没有启用任何平台」而让人以为配置没生效。
         """
         cfg = self.store.get()
         if not keys:
             keys = self._env_platform_keys()
+        env_keys = set(self._env_platform_keys())
         result: list[Platform] = []
 
         for key, base in PLATFORMS.items():
@@ -170,7 +176,8 @@ class OptimizerService:
                 output_file=(override.output_file if override and override.output_file
                              else base.output_file),
                 history_file=base.history_file,
-                enabled=(override.enabled if override else base.enabled),
+                enabled=(override.enabled if override
+                         else (base.enabled or key in env_keys)),
                 dns=self._build_dns(key, base),
                 note=base.note,
             )
@@ -247,12 +254,19 @@ class OptimizerService:
 
     # ---- 运行控制 ----
     def current_interval(self) -> int:
-        return max(60, int(self.store.get().interval or 300))
+        return max(MIN_LOOP_INTERVAL, int(self.store.get().interval or 300))
 
     def _loop_settings(self) -> dict:
         """CycleRunner 每轮开始前会调用它，因此网页上改间隔/窗口无需重启。"""
         cfg = self.store.get()
-        return {"interval": max(60, int(cfg.interval or 300)), "window": cfg.window or ""}
+        raw = int(cfg.interval or 300)
+        interval = max(MIN_LOOP_INTERVAL, raw)
+        if raw < MIN_LOOP_INTERVAL and getattr(self, "_warned_interval", None) != raw:
+            # 静默截断会让人以为设置没生效，这里明确告知一次
+            self._warned_interval = raw
+            self.log(f"⚠ 轮询间隔 {raw}s 低于下限，已按 {MIN_LOOP_INTERVAL}s 执行"
+                     f"（防止把出口带宽和 NAT 会话表打爆）", level="warn")
+        return {"interval": interval, "window": cfg.window or ""}
 
     def start(self) -> tuple[bool, str]:
         with self.lock:
@@ -301,9 +315,13 @@ class OptimizerService:
             config = self.build_run_config(extra)
             self.log("手动触发：立即跑一轮")
 
-            def worker() -> None:
+            def worker(stop_event: threading.Event) -> None:
                 try:
-                    outcomes = run_once(platforms, config, emit=self._on_event)
+                    # 必须把 stop_event 传进去，否则「停止」按钮对手动任务无效，
+                    # 扫描会一直跑到结束，期间 runner.running 恒为 True，
+                    # 导致启动循环 / DNS 预览等操作全被 409 挡住。
+                    outcomes = run_once(platforms, config, emit=self._on_event,
+                                        stop_event=stop_event)
                     self.last_results = {
                         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "platforms": {o.platform.key: {"alive": len(o.passed),
@@ -316,7 +334,7 @@ class OptimizerService:
 
             # 借用 runner 线程机制保证「同时只有一个任务」
             self.runner.manual = True
-            self.runner.start(lambda cycle, stop: worker(), interval=60, cycles=1)
+            self.runner.start(lambda cycle, stop: worker(stop), interval=60, cycles=1)
             return True, "已开始"
 
     def dns_preview(self) -> tuple[bool, str]:
@@ -326,6 +344,23 @@ class OptimizerService:
         return self.run_single({"dns_mode": "push", "dns_confirm": True, "no_write": True})
 
     # ---- 状态 ----
+    def config_payload(self) -> dict:
+        """返回给网页的配置（同时补齐 DNS 面板所需的条目）。
+
+        网页的「DNS 下发」面板只渲染 config.dns 里已有的条目，
+        这里按当前生效的平台补齐缺失项，保证用户有入口可配。
+        """
+        defaults: dict[str, dict] = {}
+        try:
+            for platform in self.build_platforms():
+                if platform.dns:
+                    defaults[platform.key] = dict(platform.dns)
+        except Exception:                       # pragma: no cover - 配置异常时不阻断页面
+            defaults = {}
+        if defaults:
+            self.store.ensure_dns_entries(defaults)
+        return self.store.get().to_dict()
+
     def vars_overview(self) -> dict:
         """常用变量的三方对照（默认值 / .env / 网页），说明谁在生效。"""
         from .config_store import env_file_path
@@ -446,7 +481,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._text(PAGE_HTML, content_type="text/html; charset=utf-8")
         elif path == "/api/config":
-            self._json({"config": self.service.store.get().to_dict()})
+            self._json({"config": self.service.config_payload()})
         elif path == "/api/vars":
             self._json(self.service.vars_overview())
         elif path == "/api/status":

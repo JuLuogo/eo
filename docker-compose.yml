@@ -38,7 +38,9 @@ services:
       EO_MODE: web                # web=带管理页面；monitor=纯后台循环；scan=跑一次
       EO_WEB_PORT: "${EO_WEB_PORT:-8787}"
       EO_NETWORK: "${EO_NETWORK:-lt}"     # lt=联通 / dx=电信 / yd=移动
-      EO_PLATFORMS: "${EO_PLATFORMS:-eo-lt,esa-lt,cft-lt}"
+      # 留空即可：程序会按 EO_NETWORK 自动推导出 eo-<运营商>,esa-<运营商>,cft-<运营商>。
+      # 只有想精确指定平台组合时才需要显式填写。
+      EO_PLATFORMS: "${EO_PLATFORMS:-}"
       EO_RATE: "${EO_RATE:-100}"          # ★ 全平台合计 TCP 连接上限 100/秒
       EO_INTERVAL: "${EO_INTERVAL:-300}"
       EO_WINDOW: "${EO_WINDOW:-}"         # 例如 00:00-07:00，留空=全天

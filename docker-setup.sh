@@ -96,7 +96,12 @@ env_set() {
 # --------------------------------------------------------------------------
 # 3. 交互配置
 # --------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ] && [ -f ".env.example" ]; then
+# 先记住 .env 是否本来就有：.env.example 里带着 EO_WEB_PORT=8787，
+# 若把它当成「用户已设的端口」，电信/移动机器就永远拿不到 8788/8789 的默认值。
+ENV_PREEXISTED=0
+[ -f "$ENV_FILE" ] && ENV_PREEXISTED=1
+
+if [ "$ENV_PREEXISTED" = "0" ] && [ -f ".env.example" ]; then
     cp .env.example "$ENV_FILE"
     say "已从 .env.example 生成 .env"
 fi
@@ -140,11 +145,13 @@ case "$CARRIER" in
     *) warn "运营商未确定，默认按联通 (lt)"; CARRIER="lt" ;;
 esac
 
-# 端口：按运营商给不同默认值
+# 端口：按运营商给不同默认值（联通 8787 / 电信 8788 / 移动 8789，三台机器天然错开）
 case "$CARRIER" in
     dx) DEFAULT_PORT=8788 ;; yd) DEFAULT_PORT=8789 ;; *) DEFAULT_PORT=8787 ;;
 esac
-EXISTING_PORT="$(env_get EO_WEB_PORT '')"
+# 只有 .env 本来就有（用户之前跑过或手动配过）才认为端口是「已设定」的
+EXISTING_PORT=""
+[ "$ENV_PREEXISTED" = "1" ] && EXISTING_PORT="$(env_get EO_WEB_PORT '')"
 
 if [ -n "${EO_WEB_PORT:-}" ]; then
     PORT="$EO_WEB_PORT"

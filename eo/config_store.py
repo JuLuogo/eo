@@ -16,7 +16,7 @@ import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 MASK = "******"
 
@@ -313,6 +313,38 @@ class ConfigStore:
     def get(self) -> AppConfig:
         with self._lock:
             return self.config
+
+    def ensure_dns_entries(self, defaults: Mapping[str, Mapping[str, Any]]) -> bool:
+        """为网页补齐缺失的 DNS 配置项（值取自代码里的平台定义）。
+
+        为什么需要：网页的「DNS 下发」面板只渲染 config.dns 里**已有**的条目
+        （renderDns 遍历 cfg.dns），而 config.json 初始没有 dns 字段，
+        于是面板一片空白、用户根本没有入口去配置 DNS。
+
+        只在内存里补（不落盘）：这些值本身可由 platforms.py 推导，
+        用户真正在网页上改过之后才随下次 save() 写入文件。
+        返回是否补过条目。
+        """
+        added = False
+        for key, dns in (defaults or {}).items():
+            if not dns or key in self.config.dns:
+                continue
+            provider = str(dns.get("provider") or "none")
+            self.config.dns[key] = DnsSettings(
+                platform=key,
+                provider=provider,
+                zone_name=str(dns.get("zone_name") or ""),
+                record_name=str(dns.get("record_name") or ""),
+                region=str(dns.get("region") or ""),
+                zone_id=str(dns.get("zone_id") or ""),
+                cname=str(dns.get("cname") or ""),
+                ttl=int(dns.get("ttl") or 1),
+                batch_size=int(dns.get("batch_size") or 50),
+                # 代码里已配置 provider 的平台，网页上默认勾选启用
+                enabled=bool(provider and provider != "none"),
+            )
+            added = True
+        return added
 
     def update(self, patch: dict) -> AppConfig:
         """按前端提交的 patch 更新配置；掩码值不会覆盖真实密钥。"""
