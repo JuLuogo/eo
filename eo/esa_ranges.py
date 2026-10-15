@@ -181,9 +181,23 @@ class ChinaFilter:
 
 def exclude_china(prefixes: Sequence[str], filter_: ChinaFilter,
                   log: Log = print) -> tuple[list[str], list[str]]:
-    """返回 (保留, 剔除) 两个前缀列表。"""
-    kept, dropped = [], []
+    """返回 (保留, 剔除) 两个前缀列表。
+
+    只处理 IPv4：中国大陆的判定区间本身就是 v4，而 v6 前缀若原样留在网段文件里，
+    下游的全量展开会试图展开 2^96 个地址（虽然会被上限拦住，但那是错误路径）。
+    因此这里直接把非 v4 前缀丢掉，而不是"保留"。
+    """
+    import ipaddress as _ip
+
+    kept, dropped, skipped = [], [], 0
     for prefix in prefixes:
+        try:
+            network = _ip.ip_network(prefix, strict=False)
+        except ValueError:
+            continue
+        if network.version != 4:
+            skipped += 1
+            continue
         try:
             if filter_.is_china(prefix):
                 dropped.append(prefix)
@@ -191,6 +205,8 @@ def exclude_china(prefixes: Sequence[str], filter_: ChinaFilter,
                 kept.append(prefix)
         except ValueError:
             continue
+    if skipped:
+        log(f"  跳过 {skipped} 个非 IPv4 前缀（本工具只扫 IPv4）")
     if dropped:
         log(f"  剔除中国大陆前缀 {len(dropped)} 个")
     return kept, dropped

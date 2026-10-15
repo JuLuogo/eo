@@ -43,6 +43,33 @@ def build_payload(webhook: str, text: str) -> dict:
     return {"text": text}
 
 
+def _business_error(body: str) -> str:
+    """从响应体里提取业务级错误码，没有错误时返回空串。
+
+    为什么需要：飞书与企业微信在「webhook 无效 / 被限流 / 机器人被移除」时
+    依然返回 HTTP 200，错误信息藏在响应体的 code / errcode 字段里。
+    只看 HTTP 状态会把失败判成成功 —— 无人值守的告警配错了也永远没人知道。
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("code", "errcode", "StatusCode", "status_code", "status"):
+        if key not in data:
+            continue
+        try:
+            value = int(data[key])
+        except (TypeError, ValueError):
+            continue
+        if value != 0:
+            msg = (data.get("msg") or data.get("errmsg") or data.get("message")
+                   or data.get("error") or "")
+            return f"{key}={value} {msg}".strip()
+    return ""
+
+
 def send(webhook: str | None, text: str, log: Log | None = None,
          timeout: float = 10.0) -> bool:
     """发送通知；未配置 webhook 时直接返回 True（不影响主流程）。"""
@@ -59,15 +86,21 @@ def send(webhook: str | None, text: str, log: Log | None = None,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(200).decode("utf-8", "replace")
-        log(f"通知已发送（HTTP {response.status}）: {body[:120]}")
-        return True
+            status = response.status
+            body = response.read(500).decode("utf-8", "replace")
     except urllib.error.URLError as exc:
         log(f"通知发送失败: {exc}")
         return False
     except Exception as exc:  # pragma: no cover
         log(f"通知发送异常: {exc}")
         return False
+
+    error = _business_error(body)
+    if error:
+        log(f"通知被拒绝（HTTP {status}）: {error}")
+        return False
+    log(f"通知已发送（HTTP {status}）: {body[:120]}")
+    return True
 
 
 def notify_outcomes(webhook: str | None, outcomes: Sequence, log: Log | None = None) -> bool:

@@ -129,9 +129,16 @@ def run_once(
         from .core import load_targets as _load
 
         path = Path(config.targets)
-        if path.exists():
-            targets = _load(path)
-            log(f"使用统一网段文件 {path.name}，共 {len(targets)} 个 IP（所有平台共用）")
+        if not path.exists():
+            # 指定了网段文件却不存在时，绝不能「静默改用平台默认网段」——
+            # 那会让用户以为只扫了测试文件，实际把全量网段扫了一遍。
+            log_error(f"✗ 指定的网段文件不存在: {path}")
+            log_error("  已中止本轮（不会改用平台默认网段，避免误扫全量）")
+            emit({"type": "error", "scope": "targets-missing", "path": str(path)})
+            emit({"type": "state", "state": "idle"})
+            return []
+        targets = _load(path)
+        log(f"使用统一网段文件 {path.name}，共 {len(targets)} 个 IP（所有平台共用）")
 
     # 链路可信度检查：本机若有代理/透明网关接管 HTTPS，钉 IP 探测会全部「可用」
     if not config.skip_check:
@@ -337,7 +344,17 @@ def _apply_dns(results: Sequence[tuple[ScanOutcome, bool]], config: RunConfig,
         if suspended:
             log(f"跳过 {platform.name}: 结果可疑，拒绝下发")
             continue
-        result = sync_platform(platform, log=log, dry_run=dry_run, force=config.dns_force)
+        # 单个平台的 DNS 故障（网络抖动、权限不足等）不应影响其它平台，
+        # 更不该让整轮运行中断 —— 兜住后如实上报即可。
+        try:
+            result = sync_platform(platform, log=log, dry_run=dry_run,
+                                   force=config.dns_force)
+        except Exception as exc:
+            summary = f"DNS 下发异常: {type(exc).__name__}: {exc}"
+            log(f"  ✗ {platform.name} {summary}")
+            emit({"type": "dns", "platform": platform.key, "ok": False,
+                  "summary": summary})
+            continue
         log(f"  -> {result.summary()}")
         emit({"type": "dns", "platform": platform.key, "ok": result.ok,
               "summary": result.summary()})

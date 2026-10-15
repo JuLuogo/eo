@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from .core import Platform
@@ -239,21 +240,36 @@ def get_platforms(keys: list[str] | None = None, include_disabled: bool = False,
     keys 为空表示全部（默认只取启用的）；networks 用于按运营商筛选，
     例如 networks=["lt"] 只取联通那一套。
     两者都未指定时会参考 EO_PLATFORMS / EO_NETWORK（见 env_platform_keys）。
+
+    被明确点名的平台一律视为「启用」：调用方（-p / -n / EO_PLATFORMS /
+    EO_NETWORK）已经表达了「我就要跑这些」的意图，此时若还用代码里的
+    enabled 默认值把它们过滤掉，扫描就会静默什么都不做 ——
+    而代码里默认只有 lt 三件套是启用的。
     """
+    explicit = bool(keys or networks)
     if not keys and not networks and not include_disabled:
         keys = env_platform_keys() or None
+        explicit = bool(keys)
 
     if keys:
         unknown = [k for k in keys if k not in PLATFORMS]
         if unknown:
             raise KeyError(f"未知平台: {', '.join(unknown)}（可选: {', '.join(PLATFORMS)}）")
         selected = [PLATFORMS[k] for k in keys]
+    elif networks:
+        # 按运营商筛选时以【全部变体】为基础：若先只取"默认启用的平台"
+        # （代码里只有 lt 三件套），再筛 dx/yd 就会得到空列表 ——
+        # 也就是「电信机上跑 --network dx 什么都不扫」。
+        selected = list(PLATFORMS.values())
     else:
         selected = [p for p in PLATFORMS.values() if include_disabled or p.enabled]
 
     if networks:
         wanted = {n.lower() for n in networks}
         selected = [p for p in selected if (p.network or DEFAULT_CARRIER) in wanted]
+
+    if explicit:
+        selected = [replace(p, enabled=True) for p in selected]
     return selected
 
 

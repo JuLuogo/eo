@@ -21,7 +21,15 @@ SUITES = {
     "scheduler": "调度器：间隔热更新 / 停止响应 / 时间窗口",
     "carriers": "三运营商平台配置（联通/电信/移动）",
     "web_console": "Web 控制台：鉴权 / 配置 / 进度 / 日志 / DNS / 任务状态",
+    "frontend_static": "前端静态一致性：JS 语法 / 元素 id / API 路径 / 按钮绑定",
+    "dns_sync": "DNS 下发安全性：批量/就地更新/骤降保护/网络异常不误改线上",
+    "notify": "通知 webhook：飞书 / 企业微信 / 通用 JSON / 业务错误码",
+    "ranges": "网段拉取解析：CloudFront / Cloudflare / ESA BGP（离线解析）",
+    "cli_e2e": "CLI 端到端：scan 落盘 / monitor 多轮 / 参数校验 / 运营商选择",
 }
+
+# 需要 Docker 的套件不放进 run_all（它单独跑）：
+#   tests/docker_integration.sh
 
 
 def main(argv: list[str]) -> int:

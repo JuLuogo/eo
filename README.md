@@ -238,8 +238,13 @@ eo-yd.1.060730.xyz   ← 移动
 ```bash
 python run.py list --all-platforms      # 看全部变体与各自的 DNS 记录
 python run.py scan --network lt         # 只跑联通那一套
+python run.py scan --network dx yd      # 电信 + 移动（可多选）
 python run.py scan -p eo-lt esa-dx      # 精确指定某个变体
 ```
+
+> 被**明确点名**的平台一律视为启用：`-n dx`、`-p esa-dx`、`EO_NETWORK=dx`、
+> `EO_PLATFORMS=eo-dx` 都会直接开跑，不受代码里 `enabled` 默认值影响。
+> 只有「什么都没指定」时才回退到代码里默认启用的 `lt` 三件套。
 
 ### ★ 关键：运营商不是代码区分的，而是「在哪台机器上跑」
 
@@ -253,11 +258,10 @@ python run.py scan -p eo-lt esa-dx      # 精确指定某个变体
 
 在联通机器上跑 `--network dx` 是没意义的 —— 测出来的还是联通视角的延迟。
 
-默认只启用 `lt` 那一套；电信/移动机器上把 `eo/platforms.py` 里对应变体的
-`enabled` 改成 `True`（或在 Web 控制台勾选）即可。三台机器可以共用同一份代码，
-也可以各跑各的容器。
+用一键脚本部署时不用管这些：`EO_NETWORK` 会被写进 `.env`，程序据此自动选用
+对应运营商的三件套（`EO_PLATFORMS` 只在想精确指定组合时才需要）。
 
-> 想要一个更细的粒度（比如「电信+联通」合并成一条记录），直接改
+> 想在一个更细的粒度上合并（比如「电信+联通」写进同一条记录），直接改
 > `record_name` 即可，例如把 `eo-dx` 和 `eo-yd` 都指向同一条记录。
 
 ---

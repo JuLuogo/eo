@@ -134,13 +134,17 @@ def prepare_platforms(args) -> list[Platform]:
 
 
 def load_target_override(platforms: list[Platform], args) -> list[str] | None:
-    """--targets 指定网段文件时，所有平台共用该文件。"""
+    """--targets 指定网段文件时，所有平台共用该文件。
+
+    文件不存在时直接退出：静默回退到平台默认网段会让用户误扫全量。
+    """
     targets_file = getattr(args, "targets", None)
     if not targets_file:
         return None
     path = Path(targets_file)
     if not path.exists():
         safe_log(f"网段文件不存在: {path}")
+        safe_log("  已中止（不会改用平台默认网段，避免误扫全量）")
         sys.exit(2)
     ips = load_targets(path)
     safe_log(f"使用统一网段文件 {path.name}，共 {len(ips)} 个 IP（所有平台共用）")
@@ -181,6 +185,16 @@ def build_run_config(args, platforms: list[Platform]) -> RunConfig:
 def run_once(platforms: list[Platform], args, round_no: int = 1) -> list:
     """CLI 的一轮执行：组装配置后交给 runner，与 Web 端完全同源。"""
     quiet = bool(getattr(args, "quiet", False))
+
+    # --targets 指定了文件但不存在时必须立刻停下：
+    # 以前这里没做校验（runner 里是 if exists 静默跳过），结果是
+    # 「以为只扫个小文件」→ 实际把平台默认的几千个 IP 全扫了。
+    targets_arg = getattr(args, "targets", None)
+    if targets_arg and not Path(targets_arg).exists():
+        safe_log(f"网段文件不存在: {targets_arg}")
+        safe_log("  已中止（不会改用平台默认网段，避免误扫全量）")
+        sys.exit(2)
+
     config = build_run_config(args, platforms)
 
     if len(platforms) > 1 and not quiet:
@@ -276,6 +290,9 @@ def apply_dns(outcomes, args) -> None:
 def cmd_scan(args) -> int:
     platforms = prepare_platforms(args)
     outcomes = run_once(platforms, args)
+    if not outcomes:
+        # 没有产生任何结果（例如指定的网段文件不存在）—— 不能当成成功
+        return 2
     if dns_mode(args) != "none":
         apply_dns(outcomes, args)
 
@@ -345,7 +362,15 @@ def _monitor_loop(args, shutdown: _Shutdown) -> int:
         # 时间窗口的判断交给 CycleRunner（window 参数），这里只跑一轮
         run_once(platforms, args, round_no=cycle_no)
 
-    runner = CycleRunner()
+    def emit(event: dict) -> None:
+        # 循环层面的提示（例如「不在时间窗口 X 内，等待」）必须让用户看到：
+        # 否则加了 --window 之后程序静静待着，用户无法判断是否正常。
+        if event.get("type") == "log":
+            line = event.get("line", "")
+            if line:
+                safe_log(line)
+
+    runner = CycleRunner(emit=emit)
     runner.start(job, interval=interval, cycles=args.cycles or 0, window=args.window or "")
 
     # 主线程等待；收到 SIGTERM/SIGINT 时请求停止（当前轮收尾后退出）

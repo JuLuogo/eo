@@ -209,6 +209,10 @@ def _get_zone_id(client, target: DnsTarget, log: Log) -> str | None:
     except sdk["exceptions"].ClientRequestException as exc:
         log(f"  ✗ 查询 zone 失败: {exc.error_msg if hasattr(exc, 'error_msg') else exc}")
         return None
+    except Exception as exc:  # 网络抖动 / SDK 其它异常，同样不能穿透
+        log(f"  ✗ 查询 zone 异常: {type(exc).__name__}: {exc}")
+        return None
+
     zones = getattr(response, "zones", None) or []
     if not zones:
         log(f"  ✗ 未找到域名 {target.zone_name}")
@@ -216,8 +220,17 @@ def _get_zone_id(client, target: DnsTarget, log: Log) -> str | None:
     return zones[0].id
 
 
-def _find_records(client, zone_id: str, target: DnsTarget, log: Log) -> list[dict]:
-    """找出目标记录名下的记录集（只匹配完全相同的主机名，自动翻页）。"""
+def _find_records(client, zone_id: str, target: DnsTarget, log: Log) -> list[dict] | None:
+    """找出目标记录名下的记录集（只匹配完全相同的主机名，自动翻页）。
+
+    返回值区分两种「没有」：
+      * []    —— 查询成功，线上确实没有该记录的记录集（可以放心新建）
+      * None  —— 查询失败（网络抖动、权限不足等），**现状未知**
+
+    区分这两者至关重要：若把「查询失败」当成「没有记录」，调用方会走新建分支，
+    结果旧的记录集仍然保留、又新增一批 —— 域名上出现重复 A 记录，
+    而且旧记录再也不会被清理。所以查询失败必须向上传递、由调用方中止下发。
+    """
     sdk = _sdk()
     wanted = target.normalized_name()
     found: list[dict] = []
@@ -243,7 +256,10 @@ def _find_records(client, zone_id: str, target: DnsTarget, log: Log) -> list[dic
             response = client.list_record_sets(request)
         except sdk["exceptions"].ClientRequestException as exc:
             log(f"  ✗ 查询记录失败: {exc.error_msg if hasattr(exc, 'error_msg') else exc}")
-            break
+            return None
+        except Exception as exc:  # 网络抖动 / SDK 其它异常
+            log(f"  ✗ 查询记录集异常: {type(exc).__name__}: {exc}")
+            return None
 
         for recordset in getattr(response, "recordsets", None) or []:
             name = (recordset.name or "")
@@ -273,6 +289,9 @@ def _delete_record(client, zone_id: str, recordset_id: str, log: Log) -> bool:
     except sdk["exceptions"].ClientRequestException as exc:
         log(f"  ✗ 删除记录集失败: {exc.error_msg if hasattr(exc, 'error_msg') else exc}")
         return False
+    except Exception as exc:  # 网络抖动 / SDK 其它异常，同样不能穿透
+        log(f"  ✗ 删除记录集异常: {type(exc).__name__}: {exc}")
+        return False
 
 
 def _create_record(client, zone_id: str, target: DnsTarget, ips: Sequence[str], log: Log) -> bool:
@@ -290,6 +309,9 @@ def _create_record(client, zone_id: str, target: DnsTarget, ips: Sequence[str], 
         return True
     except sdk["exceptions"].ClientRequestException as exc:
         log(f"  ✗ 创建记录集失败: {exc.error_msg if hasattr(exc, 'error_msg') else exc}")
+        return False
+    except Exception as exc:  # 网络抖动 / SDK 其它异常，同样不能穿透
+        log(f"  ✗ 创建记录集异常: {type(exc).__name__}: {exc}")
         return False
 
 
@@ -310,6 +332,9 @@ def _update_record(client, zone_id: str, recordset_id: str, target: DnsTarget,
         return True
     except sdk["exceptions"].ClientRequestException as exc:
         log(f"  ✗ 更新记录集失败: {exc.error_msg if hasattr(exc, 'error_msg') else exc}")
+        return False
+    except Exception as exc:  # 网络抖动 / SDK 其它异常，同样不能穿透
+        log(f"  ✗ 更新记录集异常: {type(exc).__name__}: {exc}")
         return False
 
 
@@ -390,6 +415,13 @@ def sync_records(
     result.zone_id = zone_id
 
     existing = _find_records(client, zone_id, target, log)
+    if existing is None:
+        # 查不到现状就绝不动线上：否则会把旧记录当成「没有」而新建，
+        # 造成重复解析且旧记录永远清理不掉。
+        result.errors.append("查询现有记录集失败，现状未知，已中止下发（避免产生重复解析）")
+        log("  ✗ 查询现有记录集失败，已中止（不修改线上解析）")
+        return result
+
     old_ips = [ip for record in existing for ip in record["records"]]
     result.deleted.extend(old_ips)
 
@@ -461,6 +493,11 @@ def inspect(target: DnsTarget, log: Log | None = None, client=None) -> DnsUpdate
     result.zone_id = zone_id
 
     records = _find_records(client, zone_id, target, log)
+    if records is None:
+        # 查询失败 ≠ 没有记录，不能谎报「暂无记录」
+        result.errors.append("查询记录集失败（网络或权限问题）")
+        log("  ✗ 查询记录集失败（网络或权限问题）")
+        return result
     if not records:
         log(f"  记录 {target.normalized_name()} 下暂无 {target.record_type} 记录")
     for record in records:
@@ -519,6 +556,9 @@ def _sync_cloudflare(target: DnsTarget, ips: Sequence[str], log: Log,
     except cf.CloudflareError as exc:
         result.errors.append(f"查询 Cloudflare 记录失败: {exc}")
         return result
+    except Exception as exc:      # 网络抖动同样不能穿透出去
+        result.errors.append(f"查询 Cloudflare 记录异常: {type(exc).__name__}: {exc}")
+        return result
 
     result.deleted.extend(existing)
 
@@ -533,6 +573,9 @@ def _sync_cloudflare(target: DnsTarget, ips: Sequence[str], log: Log,
                                      ttl=target.ttl, zone_id=target.zone_id, log=log)
     except cf.CloudflareError as exc:
         result.errors.append(f"Cloudflare 同步失败: {exc}")
+        return result
+    except Exception as exc:      # 同上
+        result.errors.append(f"Cloudflare 同步异常: {type(exc).__name__}: {exc}")
         return result
 
     result.created_batches = created
@@ -555,6 +598,9 @@ def _inspect_cloudflare(target: DnsTarget, log: Log) -> DnsUpdateResult:
         values = cf.inspect(token, target.zone_name, fqdn, zone_id=target.zone_id, log=log)
     except cf.CloudflareError as exc:
         result.errors.append(f"查询失败: {exc}")
+        return result
+    except Exception as exc:      # 网络抖动同样不能穿透
+        result.errors.append(f"查询异常: {type(exc).__name__}: {exc}")
         return result
     result.deleted.extend(values)
     result.total_ips = len(values)
