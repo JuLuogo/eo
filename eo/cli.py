@@ -107,9 +107,21 @@ def prepare_platforms(args) -> list[Platform]:
         labels = "、".join(network_label(n) for n in networks)
         safe_log(f"已按运营商筛选：{labels}（共 {len(platforms)} 个平台变体）")
 
+    if keys and networks and platforms:
+        # -p 与 -n 同时给出且互相矛盾时，被筛掉的平台要明确提示，
+        # 否则「少跑了一个平台」是无声的
+        got = {p.key for p in platforms}
+        dropped = sorted({k.strip() for k in keys if k.strip()} - got)
+        if dropped:
+            safe_log(f"提示：{'、'.join(dropped)} 与所选运营商不符，本轮已跳过。")
+
     if not platforms:
-        safe_log("没有匹配的平台。用 -p 指定平台、--network 指定运营商，")
-        safe_log("或到 eo/platforms.py 把对应运营商的 enabled 打开。")
+        if keys and networks:
+            safe_log(f"没有匹配的平台：-p 指定的 {'、'.join(keys)} "
+                     f"与运营商筛选（{'、'.join(network_label(n) for n in networks)}）不一致。")
+        else:
+            safe_log("没有匹配的平台。用 -p 指定平台、--network 指定运营商，")
+            safe_log("或到 eo/platforms.py 把对应运营商的 enabled 打开。")
         sys.exit(2)
 
     overrides = {

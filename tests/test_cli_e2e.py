@@ -201,6 +201,26 @@ rc, keys, _ = platforms_of(["scan", "-n", "lt", "dx", "-q", "--targets", str(tin
                             "-w", "2", "--no-write"])
 check("-n lt dx 多选可用", len(keys) == 6, str(keys))
 
+# -p 与 -n 同时给出且互相矛盾：不能静默什么都不扫，也不能静默少扫
+rc, text = run(["scan", "-p", "eo-lt", "-n", "dx", "-q", "--skip-check",
+                "--targets", str(tiny)], timeout=120)
+check("-p eo-lt -n dx 完全冲突时退出码 2", rc == 2, f"rc={rc}")
+check("  提示指出两个参数不一致",
+      "eo-lt" in text and "不一致" in text, text.strip().splitlines()[-1] if text.strip() else "")
+
+rc, keys, text = platforms_of(["scan", "-p", "eo-lt", "eo-dx", "-n", "dx", "-q",
+                               "--targets", str(tiny), "--timeout", "1", "--retries", "0",
+                               "--skip-check", "-w", "2", "--no-write"])
+check("-p eo-lt eo-dx -n dx 部分冲突时退出码 0", rc == 0, f"rc={rc}")
+check("  只扫合法的那部分", keys == ["eo-dx"], str(keys))
+check("  明确提示 eo-lt 被跳过（不静默少扫）",
+      "eo-lt" in text and "跳过" in text, [l for l in text.splitlines() if "提示" in l][:1])
+
+rc, keys, text = platforms_of(["scan", "-p", "eo-lt", "-n", "lt", "-q",
+                               "--targets", str(tiny), "--timeout", "1", "--retries", "0",
+                               "--skip-check", "-w", "2", "--no-write"])
+check("-p eo-lt -n lt 不冲突时无多余提示", rc == 0 and "跳过" not in text, f"rc={rc}")
+
 print()
 print("=" * 70)
 if _failures:

@@ -86,10 +86,30 @@ check("--all-platforms 仍能看到全部 9 个",
       str(len(mm.get_platforms(include_disabled=True))))
 
 print()
-print("6) -n/--network 过滤")
+print("6) -n/--network 过滤（必须走真实路径：不带 include_disabled）")
+# 注意：这里刻意不传 include_disabled=True。真实 CLI 走的是默认值，
+# 而默认值只启用代码里 enabled 的变体（lt 三件套）。历史上正是「先取默认启用、
+# 再按运营商筛」导致 dx/yd 得到空列表 —— 传 include_disabled=True 会掩盖这个 bug。
 for c in ("lt", "dx", "yd"):
-    got = sorted(p.key for p in mm.get_platforms(None, include_disabled=True, networks=[c]))
+    real = mm.get_platforms(networks=[c])          # 与 CLI 完全一致的调用
+    got = sorted(p.key for p in real)
     check(f"--network {c}", got == sorted(f"{s}-{c}" for s in ("eo", "esa", "cft")), str(got))
+    check(f"--network {c} 全部标记为启用", bool(got) and all(p.enabled for p in real),
+          str([p.key for p in real if not p.enabled]) or "全部 enabled")
+    check(f"--network {c} 结果非空（回归：先取默认启用再筛会得空列表）", bool(got), str(got))
+
+multi = sorted(p.key for p in mm.get_platforms(networks=["lt", "dx"]))
+check("--network lt dx 得 6 个变体", multi == sorted(f"{s}-{c}" for s in ("eo", "esa", "cft")
+                                                    for c in ("lt", "dx")), str(multi))
+up = sorted(p.key for p in mm.get_platforms(networks=["DX"]))
+check("--network 大小写不敏感", up == ["cft-dx", "eo-dx", "esa-dx"], str(up))
+
+# -p 与 -n 矛盾时不能静默少跑：结果为 0，CLI 会明确报错并退出 2
+clash = mm.get_platforms(["eo-lt"], networks=["dx"])
+check("-p eo-lt 配 -n dx 得空列表（由 CLI 报错，不静默扫描）", clash == [], str([p.key for p in clash]))
+# 部分矛盾：合法的那部分照跑
+partial = sorted(p.key for p in mm.get_platforms(["eo-lt", "eo-dx"], networks=["dx"]))
+check("-p eo-lt eo-dx 配 -n dx 只留 eo-dx", partial == ["eo-dx"], str(partial))
 
 print()
 print("7) 同一平台三运营商共用目标域名（只有运营商与 DNS 记录不同）")

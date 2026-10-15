@@ -65,3 +65,23 @@ bash tests/docker_integration.sh
 * `test_dns_sync.py` 与 `test_notify.py` 全部使用假客户端 / 本地 HTTP 接收端，
   **不会向任何真实 DNS 或 webhook 发请求**。
 * 失败时输出会列出具体失败项，便于定位。
+
+## 测试本身是否可信
+
+「全绿」也可能是测试失效导致的假绿。为排除这一点，套件做过**故障注入**验证：
+把代码故意改坏（还原历史 bug、破坏限速、去掉日志封顶、让运营商过滤失效等），
+确认对应套件确实会变红并返回非零退出码。已覆盖：
+
+| 注入的故障 | 被哪个套件抓到 |
+| --- | --- |
+| 还原「先取默认启用再按运营商筛」→ `-n dx` 得空列表 | `test_carriers.py`（8 条失败） |
+| 让 `-n` 运营商过滤整体失效（返回全部 9 个） | `test_carriers.py`（7 条失败） |
+| HTML 缺少 JS 引用的 id | `test_frontend_static.py` |
+| 内嵌 JS 语法错误 | `test_frontend_static.py` |
+| 日志环形缓冲不封顶（无限增长） | `test_logbuffer.py`（8 条失败） |
+| 限速器不生效 / 允许突发 | `test_ratelimit.py`（8 条失败） |
+| DNS 查询失败时返回空列表（历史上会写重复记录） | `test_dns_sync.py`（4 条失败） |
+
+注：`test_carriers.py` 第 6 节刻意**不传** `include_disabled=True`，
+因为真实 CLI 走的是默认值；传了会让测试通过但掩盖 `-n dx` 返回空列表的 bug。
+
