@@ -440,6 +440,17 @@ class CycleRunner:
         if wait and self._thread:
             self._thread.join(timeout=30)
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """等待循环线程结束，返回是否已经结束。
+
+        停止服务时用它给「正在跑的这一轮」留一点收尾时间（写结果 / 下发 DNS），
+        但不能无限等 —— 超过宽限期进程会被 SIGKILL。
+        """
+        if self._thread is None:
+            return True
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
     def trigger_now(self) -> None:
         """打断当前睡眠，立刻进入下一轮。"""
         self._wake.set()

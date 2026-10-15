@@ -62,12 +62,33 @@ def get_zone_id(token: str, zone_name: str) -> str:
 
 
 def list_records(token: str, zone_id: str, fqdn: str, record_type: str = "A") -> list[dict]:
-    body = _request(
-        "GET",
-        f"/zones/{zone_id}/dns_records?type={record_type}&name={fqdn}&per_page=100",
-        token,
-    )
-    return body.get("result") or []
+    """列出该名称下的**全部**记录（自动翻页）。
+
+    Cloudflare 单页最多 100 条。少翻一页就会把已有记录当成「不存在」，
+    后果是：为同一批 IP 新建重复的同名 A 记录，且看不见的旧记录永远清理不掉。
+    """
+    records: list[dict] = []
+    page = 1
+    while page <= 100:                      # 防御：异常响应不至于死循环
+        body = _request(
+            "GET",
+            f"/zones/{zone_id}/dns_records?type={record_type}&name={fqdn}"
+            f"&per_page=100&page={page}",
+            token,
+        )
+        batch = body.get("result") or []
+        records.extend(batch)
+        if not batch:
+            break
+        info = body.get("result_info") or {}
+        total_pages = info.get("total_pages")
+        if isinstance(total_pages, int) and total_pages > 0:
+            if page >= total_pages:
+                break
+        elif len(batch) < 100:
+            break
+        page += 1
+    return records
 
 
 def create_record(token: str, zone_id: str, name: str, content: str,
@@ -113,33 +134,58 @@ def replace(token: str, zone_name: str, fqdn: str, ips: Sequence[str],
 
     返回 (新建数, 删除数)。已存在但内容相同的记录会被保留（不产生无谓改动）。
     注意 Cloudflare 免费版 TTL=1 表示 Auto。
+
+    安全约束（出错时宁可少改，也不能把解析清空）：
+      * 先建后删：任何时刻该名称都至少有解析；
+      * 只要有该建而没建成的记录，就完全跳过删除步骤；
+      * 有删除失败会抛错告知调用方（否则线上残留脏解析却无人知晓）。
     """
     zone_id = zone_id or get_zone_id(token, zone_name)
     existing = list_records(token, zone_id, fqdn)
     existing_by_content = {record.get("content"): record for record in existing}
 
-    wanted = [ip for ip in ips if ip]
-    wanted_set = set(wanted)
+    # 去重并去掉空白：Cloudflare 是一个 IP 一条 A 记录，
+    # 重复的 IP 会变成多条同名记录，空值则会写出一条无效解析。
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for ip in ips:
+        clean = (ip or "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            wanted.append(clean)
 
     created = deleted = 0
+    failures: list[str] = []
 
     # 1) 先补齐需要新增的（同名的多条 A 记录 = 多 IP 轮询）
-    new_ips = [ip for ip in wanted if ip not in existing_by_content]
-    for ip in new_ips:
+    for ip in [ip for ip in wanted if ip not in existing_by_content]:
         try:
             create_record(token, zone_id, fqdn, ip, ttl=ttl)
             created += 1
         except CloudflareError as exc:
-            log(f"  ✗ 创建 {fqdn} -> {ip} 失败: {exc}")
+            failures.append(f"创建 {fqdn} -> {ip} 失败: {exc}")
+            log(f"  ✗ {failures[-1]}")
+
+    # 有没建成的就绝不动旧记录：否则「新建失败 + 照常删除」会把解析清空
+    if failures:
+        log(f"  ✗ 新建失败 {len(failures)} 条，已跳过删除步骤（保留现有解析）")
+        raise CloudflareError("；".join(failures[:3]))
 
     # 2) 再删除多余的
+    delete_failures: list[str] = []
     for content, record in existing_by_content.items():
-        if content not in wanted_set:
+        if content not in seen:
             try:
                 delete_record(token, zone_id, record["id"])
                 deleted += 1
             except CloudflareError as exc:
-                log(f"  ✗ 删除 {fqdn} -> {content} 失败: {exc}")
+                delete_failures.append(f"删除 {fqdn} -> {content} 失败: {exc}")
+                log(f"  ✗ {delete_failures[-1]}")
+
+    if delete_failures:
+        raise CloudflareError(
+            f"新建 {created} 条成功，但 {len(delete_failures)} 条删除失败"
+            f"（线上可能残留旧解析）: " + "；".join(delete_failures[:3]))
 
     log(f"  Cloudflare 同步完成: 新建 {created} 条，删除 {deleted} 条，"
         f"共 {len(wanted)} 个 IP")

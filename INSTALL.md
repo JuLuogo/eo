@@ -44,6 +44,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.s
 - `EO_WEB_PORT`：留空则按运营商取默认（lt=8787、dx=8788、yd=8789）
 - 其他可调项：`EO_RATE`（限速，默认 100）、`EO_INTERVAL`（间隔，默认 300）、
   `EO_WINDOW`（时间窗口）、`EO_DNS_SYNC`（默认 `dry-run` 只预览不下发）
+- `EO_SHUTDOWN_GRACE`（默认 5）：收到 `docker stop` / SIGTERM 后，留给
+  「正在跑的这一轮」收尾的秒数，然后才退出。详见下方「停止与重启」。
 
 执行完会打印：
 
@@ -391,7 +393,40 @@ docker compose run --rm optimizer dns-check -p eo-lt     # 只读查看 DNS 解�
 docker compose run --rm optimizer logs-save              # （容器内无 journalctl，日志看 compose）
 ```
 
-### 7.4 挂载目录权限（已自动处理，无需手动干预）
+### 7.4 停止与重启（收到 SIGTERM 会优雅退出）
+
+`docker stop` / `docker compose down` / `docker compose restart` 发的是 **SIGTERM**。
+容器里的进程收到后会：
+
+1. 立刻停止接受新请求，并请求当前这一轮扫描停下来；
+2. 给正在跑的一轮最多 `EO_SHUTDOWN_GRACE` 秒（默认 5）收尾；
+3. 打印 `Web 控制台已关闭` 后以**退出码 0** 正常退出。
+
+实测：空转时约 1 秒退出；正在扫描时约 6 秒退出（均在 docker 默认 10 秒宽限期内，
+不会被 SIGKILL）。
+
+```bash
+docker compose stop          # 优雅停止（走上面的流程）
+docker compose restart       # 优雅停止后重启
+docker stop eo               # 直接对容器操作也一样
+```
+
+如果你的场景需要「正在下发的 DNS 必须做完」，把宽限期调大，同时把 docker 的
+等待时间也调大（否则到 10 秒还是会被强杀）：
+
+```bash
+# .env 里加 EO_SHUTDOWN_GRACE=20，然后
+docker stop -t 30 eo
+```
+
+> 怎么判断有没有优雅退出：`docker inspect -f '{{.State.ExitCode}}' <容器名>`
+> 返回 `0` 表示自行退出；返回 `137` 表示被 SIGKILL（说明宽限期不够）。
+> 日志里应能看到 `收到 SIGTERM，正在优雅退出…` 与 `Web 控制台已关闭`。
+
+结果文件是**原子替换**写入的（先写临时文件再 rename），所以即使某一轮在写入时被
+中断，`results/*.txt` 也不会变成半截列表 —— 要么是上一轮的完整内容，要么是新一轮的。
+
+### 7.5 挂载目录权限（已自动处理，无需手动干预）
 
 容器启动时会以 root 修正 `config/`、`results/` 的归属，再**降权到非 root 用户**
 （UID 10001）执行程序。原因：`deploy.sh` / `onekey.sh` 都以 root 创建这两个目录，
@@ -420,7 +455,7 @@ services:
     user: "0:0"
 ```
 
-### 7.5 国内网络优化（拉不动基础镜像时）
+### 7.6 国内网络优化（拉不动基础镜像时）
 
 基础镜像 `python:3.12-slim` 默认从 Docker Hub 拉，境内可能很慢或失败。两种办法：
 
@@ -452,7 +487,7 @@ docker compose up -d          # 镜像已存在，直接启动
 > Dockerfile 里的 pip 源**默认已用清华镜像**，所以不会再出现你之前那种
 > `ConnectionResetError`。想换源可以 `--build-arg PIP_INDEX=...`。
 
-### 7.6 不想装华为云 SDK（纯优选）
+### 7.7 不想装华为云 SDK（纯优选）
 
 ```bash
 docker build --build-arg INSTALL_DNS_SDK=0 -t edge-optimizer:latest .

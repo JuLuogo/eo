@@ -90,9 +90,14 @@ ENV PYTHONUNBUFFERED=1 \
     EO_WEB_PORT=8787 \
     EO_RATE=100 \
     EO_INTERVAL=300 \
-    EO_DNS_SYNC=none
+    EO_DNS_SYNC=none \
+    EO_SHUTDOWN_GRACE=5
 
 EXPOSE 8787
+
+# docker stop 发 SIGTERM，进程收到后会停止循环再退出（见 cli._WebShutdown）。
+# 显式声明，避免以后有人改成别的信号，把「优雅停止」变成强杀。
+STOPSIGNAL SIGTERM
 
 # 入口脚本把环境变量翻译成命令行参数（见 INSTALL.md）
 ENTRYPOINT ["./docker-entrypoint.sh"]

@@ -200,5 +200,27 @@ ST=$(docker inspect -f '{{.State.Status}}' "$NAME"); RC=$(docker inspect -f '{{.
 [ "$ST" = "running" ] && ok "全程零崩溃（重启 $RC 次）" || bad "容器已退出"
 
 echo
+echo "############ 7. docker stop 要优雅且快速 ############"
+# 容器里 PID 1 就是 python，docker stop 发 SIGTERM。
+# 若没处理 SIGTERM，进程会被直接杀死（结果文件与 DNS 下发停在中间状态），
+# 或者一直不退直到宽限期结束被 SIGKILL（退出码 137）。
+# 这里刻意用 docker 默认的 10 秒宽限期，验证真的能在宽限期内自己退出。
+T0=$(date +%s)
+docker stop "$NAME" >/dev/null 2>&1
+STOP_RC=$?
+T1=$(date +%s)
+DUR=$((T1 - T0))
+EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "$NAME" 2>/dev/null)
+echo "  docker stop 耗时 ${DUR}s，容器退出码 ${EXIT_CODE}"
+[ "$STOP_RC" -eq 0 ] && ok "docker stop 正常返回" || bad "docker stop 返回 $STOP_RC"
+[ "$DUR" -le 12 ] && ok "在默认 10 秒宽限期内停止（${DUR}s）" || bad "停止过慢（${DUR}s）"
+[ "$EXIT_CODE" = "0" ] && ok "退出码 0（自行退出，不是被 SIGKILL）" \
+    || bad "退出码 $EXIT_CODE（137 表示被强杀）"
+docker logs "$NAME" 2>&1 | grep -q "收到 SIGTERM" \
+    && ok "容器内确实收到了 SIGTERM" || bad "未收到 SIGTERM"
+docker logs "$NAME" 2>&1 | grep -q "Web 控制台已关闭" \
+    && ok "走到了优雅退出逻辑（打印了关闭日志）" || bad "未走优雅退出"
+
+echo
 echo "############ 结果: 通过 $pass / 失败 $fail ############"
 [ "$fail" -eq 0 ] || exit 1

@@ -835,6 +835,10 @@ def scan_platform(
         # 边缘节点在大并发下偶发丢包/限流，失败后重试可显著减少假阴性
         attempt = 0
         while not probe.ok and attempt < platform.retries:
+            # 收到停止请求后不再重试：否则一个最坏情况要「超时 + 重试再超时」，
+            # 停止要等十几秒才收得住（docker stop 默认只给 10 秒宽限期）。
+            if stop_event is not None and stop_event.is_set():
+                break
             attempt += 1
             time.sleep(0.15 * attempt)
             limiter.acquire()      # 重试同样计入限速
@@ -934,13 +938,19 @@ def scan_platforms(
 # 5. 结果落盘 / 历史记录
 # --------------------------------------------------------------------------
 def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = False) -> None:
-    """写入结果文件。默认只写 IP，保持与原 yes.txt 完全兼容。"""
+    """写入结果文件。默认只写 IP，保持与原 yes.txt 完全兼容。
+
+    用「临时文件 + 原子替换」写入：这个文件是给 curl --resolve 直接消费的，
+    被中断时留下半截内容会让后续所有解析都指向一个残缺的列表。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if with_latency:
         lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
     else:
         lines = [p.ip for p in probes]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines), encoding="utf-8")
+    tmp.replace(path)
 
 
 def append_history(path: Path, platform: Platform, outcome: ScanOutcome) -> None:

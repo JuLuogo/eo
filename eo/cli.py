@@ -31,6 +31,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -194,7 +195,8 @@ def build_run_config(args, platforms: list[Platform]) -> RunConfig:
     )
 
 
-def run_once(platforms: list[Platform], args, round_no: int = 1) -> list:
+def run_once(platforms: list[Platform], args, round_no: int = 1,
+             stop_event=None) -> list:
     """CLI 的一轮执行：组装配置后交给 runner，与 Web 端完全同源。"""
     quiet = bool(getattr(args, "quiet", False))
 
@@ -227,7 +229,7 @@ def run_once(platforms: list[Platform], args, round_no: int = 1) -> list:
             alerts.append(line.strip())
 
     started = time.perf_counter()
-    outcomes = runner_run_once(platforms, config, emit=emit)
+    outcomes = runner_run_once(platforms, config, emit=emit, stop_event=stop_event)
     elapsed = time.perf_counter() - started
     banner(f"第 {round_no} 轮结果（总耗时 {elapsed:.1f}s）")
 
@@ -371,8 +373,12 @@ def _monitor_loop(args, shutdown: _Shutdown) -> int:
              f"{'无限循环（Ctrl+C 结束）' if not args.cycles else f'共 {args.cycles} 轮'}")
 
     def job(cycle_no: int, stop_event) -> None:
-        # 时间窗口的判断交给 CycleRunner（window 参数），这里只跑一轮
-        run_once(platforms, args, round_no=cycle_no)
+        # 时间窗口的判断交给 CycleRunner（window 参数），这里只跑一轮。
+        # stop_event 必须透传：否则收到 SIGTERM / Ctrl+C 后本轮仍要把全部 IP
+        # 扫完才退出（实测 7000+ 个 IP 时 20 秒都退不出来，docker stop 只能强杀）。
+        run_once(platforms, args, round_no=cycle_no, stop_event=stop_event)
+        if stop_event.is_set():
+            safe_log("本轮未跑完（收到停止信号），已提前收尾")
 
     def emit(event: dict) -> None:
         # 循环层面的提示（例如「不在时间窗口 X 内，等待」）必须让用户看到：
@@ -385,13 +391,24 @@ def _monitor_loop(args, shutdown: _Shutdown) -> int:
     runner = CycleRunner(emit=emit)
     runner.start(job, interval=interval, cycles=args.cycles or 0, window=args.window or "")
 
-    # 主线程等待；收到 SIGTERM/SIGINT 时请求停止（当前轮收尾后退出）
+    # 主线程等待；收到 SIGTERM/SIGINT 时请求停止（当前轮收尾后退出）。
+    # 但不能无限等：docker stop 只给 10 秒宽限期，等不到就强杀。
+    grace = _shutdown_grace()
+    stop_deadline: float | None = None
     while runner.running:
         if shutdown.requested:
-            runner.stop()
+            if stop_deadline is None:
+                runner.stop()
+                stop_deadline = time.monotonic() + grace
+            elif time.monotonic() >= stop_deadline:
+                safe_log(f"等待当前这一轮收尾超过 {grace:g}s，先退出")
+                break
         time.sleep(0.5)
 
-    safe_log(f"监控结束（已运行 {runner.cycle} 轮）")
+    cycles_done = runner.cycle
+    if shutdown.requested:
+        _finish_after_signal(f"监控结束（已运行 {cycles_done} 轮）")
+    safe_log(f"监控结束（已运行 {cycles_done} 轮）")
     return 0
 
 
@@ -702,6 +719,115 @@ def cmd_esa_ranges(args) -> int:
     return 0
 
 
+def _shutdown_grace(default: float = 5.0) -> float:
+    """停止时留给「当前这一轮」收尾的秒数。
+
+    ``docker stop`` 默认只给 10 秒宽限期，超时就直接 SIGKILL（退出码 137）。
+    留 5 秒给正在跑的一轮收尾，加上关闭服务本身的开销也在宽限期内。
+    正在下发 DNS 的轮次如果来不及，可以调大本值并同时加大
+    ``docker stop -t``（例如 EO_SHUTDOWN_GRACE=20 + docker stop -t 30）。
+    """
+    raw = os.environ.get("EO_SHUTDOWN_GRACE", "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        safe_log(f"EO_SHUTDOWN_GRACE={raw!r} 不是数字，按默认 {default:g}s 处理")
+        return default
+    return max(0.0, min(value, 60.0))
+
+
+def _finish_after_signal(message: str) -> None:
+    """信号触发的退出路径：把最后一行日志打完就退出进程。
+
+    为什么不能正常返回让解释器收尾：``concurrent.futures`` 注册了 atexit 钩子，
+    解释器退出时会去 join 线程池里的工作线程。收到停止请求时那些线程可能还在
+    探测（每次连接最长 timeout 秒），于是又要多等好几秒 —— 加起来就超过
+    ``docker stop`` 的宽限期被 SIGKILL（退出码 137），前功尽弃。
+    这里把该说的话说完、刷掉缓冲就退出，耗时可控。
+    """
+    safe_log(message)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:                            # noqa: BLE001
+        pass
+    os._exit(0)
+
+
+class _WebShutdown:
+    """把 SIGTERM/SIGINT 变成「停止循环 -> 关闭 HTTP 服务 -> 干净退出」。
+
+    容器里 PID 1 就是本进程，``docker stop`` 发的 SIGTERM 直接送到这里。
+    只捕获 KeyboardInterrupt 是不够的：SIGTERM 默认行为是立即终止进程，
+    正在写的结果文件和正在下发的 DNS 记录会停在中间状态。
+    """
+
+    def __init__(self, service, server, grace: float = 8.0) -> None:
+        self.service = service
+        self.server = server
+        self.grace = grace
+        self.requested = False
+        self._originals: dict[int, object] = {}
+        self._warned = False
+        self._lock = threading.Lock()
+        self._closing = False
+        self._closed = threading.Event()
+
+    def install(self) -> None:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                self._originals[sig] = signal.getsignal(sig)
+                signal.signal(sig, self._handle)
+            except (ValueError, OSError):   # 非主线程或平台不支持
+                pass
+
+    def restore(self) -> None:
+        for sig, handler in self._originals.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+
+    def _handle(self, signum, _frame) -> None:
+        self.requested = True
+        if not self._warned:
+            self._warned = True
+            safe_log(f"\n收到 {signal.Signals(signum).name}，正在优雅退出…")
+        # 信号处理是在主线程里打断 serve_forever() 执行的，
+        # 不能在这里直接调用 server.shutdown()：它会阻塞等待 serve_forever
+        # 返回，而主线程还停在处理函数里 —— 直接死锁。交给后台线程做。
+        threading.Thread(target=self.close, daemon=True).start()
+
+    def close(self) -> None:
+        """幂等收尾：停止循环、关闭 HTTP 服务、给当前这轮留出收尾时间。"""
+        with self._lock:
+            if self._closing:
+                self._closed.wait(timeout=self.grace + 5)
+                return
+            self._closing = True
+        try:
+            try:
+                self.service.runner.stop()          # 请求停止（不阻塞）
+            except Exception as exc:                # noqa: BLE001
+                safe_log(f"停止循环时出错: {type(exc).__name__}: {exc}")
+            try:
+                self.server.shutdown()              # 让 serve_forever() 返回
+            except Exception as exc:                # noqa: BLE001
+                safe_log(f"关闭 Web 服务时出错: {type(exc).__name__}: {exc}")
+            try:
+                if not self.service.runner.wait(self.grace):
+                    safe_log(f"等待当前这一轮收尾超过 {self.grace:g}s，先退出")
+            except Exception as exc:                # noqa: BLE001
+                safe_log(f"等待循环结束时出错: {type(exc).__name__}: {exc}")
+        finally:
+            self._closed.set()
+        if self.requested:
+            # 收尾已完成，别再让解释器去 join 线程池（见 _finish_after_signal）
+            _finish_after_signal("Web 控制台已关闭")
+
+
 def cmd_web(args) -> int:
     """启动 Web 控制台（配置管理 / 进度 / 实时日志）。"""
     from .webui import WebServer, make_service
@@ -723,12 +849,20 @@ def cmd_web(args) -> int:
         safe_log(f"  自动启动循环: {message if not ok else '已启动'}")
 
     server = WebServer(service, host=host, port=port)
+    grace = _shutdown_grace()
+    shutdown = _WebShutdown(service, server, grace=grace)
+    shutdown.install()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        safe_log("\n正在关闭 Web 控制台…")
-        service.runner.stop()
-        server.shutdown()
+        pass                       # 已由 _WebShutdown 处理，这里只是兜底
+    finally:
+        shutdown.restore()
+        shutdown.close()           # 幂等：确保循环与 HTTP 服务都已收尾
+    if not shutdown.requested:
+        # 信号触发的那条路径由 _finish_after_signal 负责打印并退出，
+        # 这里再打一次会两个线程交叉输出（日志粘成一行）
+        safe_log("Web 控制台已关闭")
     return 0
 
 
