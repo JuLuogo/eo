@@ -1,0 +1,35 @@
+[Unit]
+Description=Komari node probe (CPU temperature + per-family connections)
+Documentation=https://github.com/komari-monitor/komari
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/komari-node-probe
+ExecStart=/usr/local/bin/komari-node-probe -url ${KOMARI_URL} -uuid ${KOMARI_NODE_UUID} -token ${KOMARI_COLLECTOR_TOKEN}
+Restart=always
+RestartSec=5
+
+# 只需要读 /proc 和 /sys，其余全部关掉
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadOnlyPaths=/proc /sys
+
+# 采样 1 秒、批量 10 秒，资源占用极低
+CPUQuota=10%
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
