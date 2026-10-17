@@ -255,9 +255,10 @@ class OptimizerService:
             dns_force=bool(extra.get("dns_force", False)),
             quiet=True,            # Web 端日志走事件，不重复打印
             verbose=cfg.verbose,
-            # 0/None 表示「不覆盖平台自己的设置」，这样网页上按平台配的门槛才生效
-            max_latency_ms=cfg.max_latency_ms or None,
-            top_n=cfg.top_n or None,
+            # 注意：这里刻意不传 max_latency_ms / top_n。
+            # build_platforms() 已经把「平台级设置 > 全局设置 > 代码默认」解析好了，
+            # 而 runner 里还会再调一次 config.apply_to()，如果这里传了全局值，
+            # 就会把网页上按平台设的门槛覆盖掉。
         )
 
     # ---- 运行控制 ----

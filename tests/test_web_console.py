@@ -331,6 +331,28 @@ try:
           eo is not None and not eo.max_latency_ms and not eo.top_n,
           f"{getattr(eo, 'max_latency_ms', None)!r} {getattr(eo, 'top_n', None)!r}")
 
+    # 全局值 + 平台级值：平台级必须赢，而且 run 时不能被 apply_to 冲回全局
+    call("/api/config", "POST", {"max_latency_ms": 999, "top_n": 99})
+    call("/api/config", "POST", {"platforms": {"eo-lt": {
+        "max_latency_ms": "150", "top_n": "10"},
+        "cft-lt": {"max_latency_ms": "", "top_n": ""}}})
+    plats = {p.key: p for p in svc.build_platforms()}
+    check("平台级设置优先于全局",
+          plats["eo-lt"].max_latency_ms == 150.0 and plats["eo-lt"].top_n == 10,
+          f"{plats['eo-lt'].max_latency_ms} {plats['eo-lt'].top_n}")
+    check("平台留空时继承全局值",
+          plats["cft-lt"].max_latency_ms == 999.0 and plats["cft-lt"].top_n == 99,
+          f"{plats['cft-lt'].max_latency_ms} {plats['cft-lt'].top_n}")
+
+    applied = svc.build_run_config().apply_to(list(plats.values()))
+    after = {p.key: p for p in applied}
+    check("走一遍运行配置组装后，平台级值没被冲掉",
+          after["eo-lt"].max_latency_ms == 150.0 and after["eo-lt"].top_n == 10,
+          f"{after['eo-lt'].max_latency_ms} {after['eo-lt'].top_n}")
+    call("/api/config", "POST", {"max_latency_ms": 0, "top_n": 0,
+                                 "platforms": {"eo-lt": {"max_latency_ms": "", "top_n": ""},
+                                               "cft-lt": {"max_latency_ms": "", "top_n": ""}}})
+
 finally:
     try:
         svc.runner.stop()
