@@ -21,7 +21,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write        # 上传 Release 资产需要
       packages: write        # 推 GHCR 需要
     steps:
       - name: 拉取代码
@@ -49,6 +49,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: 构建并推送
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -61,3 +62,41 @@ jobs:
           build-args: |
             PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
             INSTALL_DNS_SDK=1
+
+      # ------------------------------------------------------------------
+      # 下面是「离线镜像包」通道。
+      #
+      # 为什么要它：GHCR 在国内经常拉不动（甚至 token 直接被拒），而 GitHub
+      # 的文件下载有大量可用代理（gh-proxy.com / ghfast.top / jsDelivr …）。
+      # 所以这里把镜像存成 tar.gz 挂到 Release，服务器下载后 docker load 即可，
+      # 完全不依赖任何 registry。镜像里已经是最新代码，与 GHCR 上的完全同源。
+      # ------------------------------------------------------------------
+      - name: 导出镜像为离线包
+        run: |
+          set -eux
+          SHORT="$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')"
+          # 用本次构建的 digest 取镜像：按 tag 触发（v1.2.3）时 latest 不会更新，
+          # 用 latest 会导出成旧镜像
+          IMG="${REGISTRY}/${SHORT}@${{ steps.build.outputs.digest }}"
+          echo "IMG=${IMG}"
+          docker pull "$IMG"
+          docker tag "$IMG" "${REGISTRY}/${SHORT}:latest"
+          # 再打一个短名字，load 之后 docker run 更好写
+          docker tag "$IMG" edge-optimizer:latest
+          docker save "${REGISTRY}/${SHORT}:latest" edge-optimizer:latest \
+            | gzip -9 -c > eo-image.tar.gz
+          ls -lh eo-image.tar.gz
+          sha256sum eo-image.tar.gz
+
+      - name: 上传到 Release（固定标签，每次覆盖）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          if ! gh release view image-latest >/dev/null 2>&1; then
+            gh release create image-latest \
+              --title "预构建镜像（自动更新）" \
+              --notes "由 GitHub Actions 在每次推送到 main 时自动更新。下载 eo-image.tar.gz 后：gunzip -c eo-image.tar.gz | docker load"
+          fi
+          gh release upload image-latest eo-image.tar.gz --clobber
+          gh release view image-latest --json assets --jq '.assets[] | "\(.name)  \(.size) 字节"'
