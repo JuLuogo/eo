@@ -44,6 +44,8 @@ pip install pytest && pytest tests/ -v
 | `test_cli_e2e.py` | scan 落盘、monitor 多轮、时间窗口、`--targets` 校验、退出码、运营商选择（`-n`/`-p`/`EO_NETWORK`）、`-p`/`-n` 冲突处理 | **命令行可用** |
 | `test_shutdown.py` | 真起进程发 SIGTERM/SIGINT：monitor 与 web 都要在宽限期内**退出码 0**（不是被强杀）、端口释放；结果文件**原子替换**（模拟中断后旧文件完好） | **docker stop 不能把结果写坏** |
 | `test_resources.py` | 按可用内存/核数计算并发上限、`EO_MAX_CONCURRENT` 覆盖、按平台数摊分、接线到 `scan_platforms`（平台对象不被就地修改） | **小内存机器不能被自己的并发压垮** |
+| `test_probe.py` | 进程内探测 vs curl：200/404/拒连/超时/自签证书/非 HTTP 响应/`EO_PROBE` 分发/50 线程并发 | **换掉 curl 子进程后行为不能漂移** |
+| `test_filter.py` | 延迟门槛丢节点、只保留最快 N 个、门槛+前N 组合、同延迟时重试过的排后面、`--max-ms`/`--top`/环境变量 | **只留下又快又稳的节点** |
 
 ## Docker 集成测试
 

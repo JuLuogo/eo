@@ -192,7 +192,23 @@ def build_run_config(args, platforms: list[Platform]) -> RunConfig:
         verbose=not getattr(args, "quiet", False),
         sample_per_24=getattr(args, "sample_per_24", None),
         deep_scan=bool(getattr(args, "deep", False)),
+        max_latency_ms=_opt_number(getattr(args, "max_ms", None), "EO_MAX_MS", float),
+        top_n=_opt_number(getattr(args, "top", None), "EO_TOP", int),
     )
+
+
+def _opt_number(cli_value, env_key: str, caster):
+    """命令行优先，其次环境变量；都没有返回 None（表示不覆盖平台配置）。"""
+    if cli_value is not None:
+        return caster(cli_value)
+    raw = (os.environ.get(env_key) or "").strip()
+    if not raw:
+        return None
+    try:
+        return caster(float(raw))
+    except ValueError:
+        safe_log(f"{env_key}={raw!r} 不是数字，已忽略")
+        return None
 
 
 def run_once(platforms: list[Platform], args, round_no: int = 1,
@@ -923,6 +939,10 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
                         help="启用 ICMP 预筛选（默认关闭：这些节点 ICMP 响应不可靠，开启会漏掉可用 IP）")
     parser.add_argument("--rate", type=float, metavar="N",
                         help=f"全平台合计 TCP 连接速率上限（连接/秒），默认 {DEFAULT_RATE:g}；0 表示不限速")
+    parser.add_argument("--max-ms", type=float, metavar="MS",
+                        help="延迟门槛：超过这个毫秒数（连接耗时）的节点直接丢弃，只留下快的")
+    parser.add_argument("--top", type=int, metavar="N",
+                        help="只保留延迟最低的 N 个节点（结果文件与 DNS 下发都只用这 N 个）")
     parser.add_argument("--with-latency", action="store_true", help="结果文件写成 ip<TAB>延迟")
     parser.add_argument("--no-write", action="store_true", help="不写结果文件与历史记录")
     parser.add_argument("--skip-check", action="store_true",

@@ -250,6 +250,8 @@ class OptimizerService:
             dns_force=bool(extra.get("dns_force", False)),
             quiet=True,            # Web 端日志走事件，不重复打印
             verbose=cfg.verbose,
+            max_latency_ms=cfg.max_latency_ms,
+            top_n=cfg.top_n,
         )
 
     # ---- 运行控制 ----

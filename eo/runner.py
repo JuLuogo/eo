@@ -62,6 +62,8 @@ class RunConfig:
     verbose: bool = False            # 是否逐 IP 推送日志（Web 上默认只推汇总）
     sample_per_24: int | None = None  # 粗扫抽样：每 /24 取几个代表 IP
     deep_scan: bool = False           # 深扫：以上一轮命中的 /24 为范围
+    max_latency_ms: float | None = None  # 延迟门槛：超过就丢弃（None/0 = 不设）
+    top_n: int | None = None             # 只保留最快的 N 个（None/0 = 全部）
 
     def apply_to(self, platforms: Iterable[Platform]) -> list[Platform]:
         """把通用覆盖项作用到平台配置上，返回平台列表。"""
@@ -79,6 +81,10 @@ class RunConfig:
                 platform.host = self.host_override
             if self.sample_per_24 is not None:
                 platform.sample_per_24 = self.sample_per_24
+            if self.max_latency_ms is not None:
+                platform.max_latency_ms = self.max_latency_ms
+            if self.top_n is not None:
+                platform.top_n = self.top_n
             platform.deep_scan = bool(self.deep_scan)
             platform.precheck_ping = bool(self.ping)
         return result

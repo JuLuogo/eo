@@ -20,6 +20,8 @@ import os
 import platform
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import time
 from dataclasses import dataclass, field, asdict, replace
@@ -45,8 +47,16 @@ MAX_EXPAND_HOSTS = 1_048_576
 # 所以真正开工前按「可用内存 + CPU 核数」压一次总并发，并把实际生效值写进日志。
 # 想自己定就设 EO_MAX_CONCURRENT（总进程数上限）。
 # --------------------------------------------------------------------------
-PER_PROBE_MB = 12.0            # 单个 curl 进程的保守估计
+PER_PROBE_MB = 12.0            # curl 实现：单个进程的保守估计
+PER_PROBE_MB_INPROC = 0.1      # 进程内实现：一个连接 + 缓冲区，约 100KB
 MAX_CONCURRENT_CAP = 512       # 硬上限，防止在超大机器上开出离谱的并发
+
+
+def probe_memory_mb() -> float:
+    """当前探测实现下，每个并发大约占多少 MB。"""
+    if (os.environ.get("EO_PROBE") or "").strip().lower() == "curl":
+        return PER_PROBE_MB
+    return PER_PROBE_MB_INPROC
 
 
 def _meminfo_mb(key: str) -> float | None:
@@ -101,7 +111,7 @@ def max_concurrent_probes(limit: int | None = None) -> int:
     avail = available_memory_mb()
     if avail is None or avail <= 0:
         return min(by_cpu, MAX_CONCURRENT_CAP)
-    by_mem = max(4, int(avail * 0.6 / PER_PROBE_MB))
+    by_mem = max(4, int(avail * 0.6 / probe_memory_mb()))
     return min(by_mem, by_cpu, MAX_CONCURRENT_CAP)
 
 
@@ -422,6 +432,7 @@ class Probe:
     latency_ms: float = 0.0
     error: str = ""
     remote_ip: str = ""
+    attempts: int = 0        # 一共试了几次（>1 说明这个节点第一次没连上，稳定性较差）
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -528,7 +539,140 @@ def http_probe(
     path: str = "/",
     status_codes: Sequence[str] = ("200",),
 ) -> Probe:
-    """把 host 强制解析到 ip，发起真实 HTTPS 请求并校验状态码。"""
+    """探测一个 IP：把域名钉到该 IP 上发请求，校验状态码。
+
+    默认走进程内实现（socket + ssl），不 fork 子进程 —— 每个并发只占几十 KB，
+    而不是一个 curl 进程的 8~12MB。设 EO_PROBE=curl 可切回旧的 curl 实现做对照。
+    """
+    if (os.environ.get("EO_PROBE") or "").strip().lower() == "curl":
+        return _http_probe_curl(ip, host, timeout=timeout, port=port,
+                                scheme=scheme, path=path, status_codes=status_codes)
+    return _http_probe_socket(ip, host, timeout=timeout, port=port,
+                              scheme=scheme, path=path, status_codes=status_codes)
+
+
+def _http_probe_socket(
+    ip: str,
+    host: str,
+    timeout: float = 3.0,
+    port: int = 443,
+    scheme: str = "https",
+    path: str = "/",
+    status_codes: Sequence[str] = ("200",),
+) -> Probe:
+    """进程内探测：直连 ip:port，SNI/Host 用目标域名，只读状态行。
+
+    等价于 curl 的 --resolve + --insecure + --http1.1：
+      * 直连被测 IP（promote 域名只用于 SNI 与 Host 头）
+      * 不校验证书（边缘节点常配的是别的证书）
+      * 只解析状态行，读完就关，省流量也省时间
+    """
+    result = Probe(ip=ip)
+    started = time.perf_counter()
+    deadline = started + timeout
+    sock: socket.socket | None = None
+
+    def fail(message: str) -> Probe:
+        result.ok = False
+        result.status = result.status or "000"
+        result.error = message
+        result.latency_ms = (time.perf_counter() - started) * 1000
+        result.total_ms = result.latency_ms
+        return result
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((ip, port))
+        result.connect_ms = (time.perf_counter() - started) * 1000
+        try:
+            result.remote_ip = sock.getpeername()[0]
+        except OSError:
+            result.remote_ip = ip
+
+        if scheme == "https":
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False          # 等价 curl --insecure
+            ctx.verify_mode = ssl.CERT_NONE
+            try:                                 # 兼容只支持较低安全等级的边缘节点
+                ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
+            except ssl.SSLError:                 # pragma: no cover - 取决于 openssl 版本
+                pass
+            sock.settimeout(max(0.2, deadline - time.perf_counter()))
+            # server_hostname 就是 SNI：必须用目标域名，否则回源/节点会返回错误
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+
+        request = (
+            f"GET {path or '/'} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "User-Agent: eo-optimizer/1.0\r\n"
+            "Accept: */*\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+        sock.settimeout(max(0.2, deadline - time.perf_counter()))
+        sock.sendall(request.encode("latin-1", "replace"))
+
+        # 只读状态行（HTTP/1.1 200 OK），不读 body
+        buf = b""
+        while b"\r\n" not in buf and len(buf) < 8192:
+            remain = deadline - time.perf_counter()
+            if remain <= 0:
+                raise TimeoutError("等待状态行超时")
+            sock.settimeout(remain)
+            chunk = sock.recv(1024)
+            if not chunk:
+                break
+            buf += chunk
+
+        line = buf.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
+        parts = line.split()
+        if len(parts) < 2 or not parts[0].startswith("HTTP/"):
+            return fail(f"非 HTTP 响应: {line[:60] or '空'}")
+
+        result.status = parts[1]
+        result.total_ms = (time.perf_counter() - started) * 1000
+        result.latency_ms = result.connect_ms or result.total_ms
+
+        if result.remote_ip and result.remote_ip != ip:
+            result.ok = False
+            result.error = f"对端 IP 不符（实际 {result.remote_ip}，链路可能被代理接管）"
+            return result
+
+        if result.status in set(status_codes):
+            result.ok = True
+        else:
+            result.error = f"HTTP {result.status}"
+        return result
+
+    except (socket.timeout, TimeoutError):
+        return fail("timeout")
+    except ssl.SSLError as exc:
+        return fail(f"TLS: {exc}")
+    except (ConnectionResetError, ConnectionRefusedError, OSError) as exc:
+        name = type(exc).__name__
+        detail = getattr(exc, "strerror", None) or str(exc)
+        return fail(f"{name}: {detail}"[:120])
+    except Exception as exc:                       # pragma: no cover - 兜底
+        return fail(f"{type(exc).__name__}: {exc}"[:120])
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _http_probe_curl(
+    ip: str,
+    host: str,
+    timeout: float = 3.0,
+    port: int = 443,
+    scheme: str = "https",
+    path: str = "/",
+    status_codes: Sequence[str] = ("200",),
+) -> Probe:
+    """curl 实现（保留作为回退与对照）：EO_PROBE=curl 时启用。"""
     result = Probe(ip=ip)
     url = f"{scheme}://{host}:{port}{path}" if port not in (80, 443) else f"{scheme}://{host}{path}"
 
@@ -655,6 +799,10 @@ class Platform:
     sample_per_24: int = 0
     # 深扫：以上一轮命中 IP 所在的 /24 为范围做全量扫描
     deep_scan: bool = False
+    # 结果筛选：延迟超过这个值（毫秒）就丢掉；0 = 不设门槛
+    max_latency_ms: float = 0.0
+    # 只保留最快的 N 个节点；0 = 全部保留
+    top_n: int = 0
     targets_file: str = ""        # 该平台的网段文件（相对项目根目录）
     output_file: str = ""         # 结果落盘文件
     history_file: str = ""        # 历史记录(jsonl)，用于持续监控
@@ -929,6 +1077,8 @@ def scan_platform(
                 path=platform.path,
                 status_codes=platform.status_codes,
             )
+        # 记录一共试了几次：>1 说明第一次没连上，稳定性较差，排序时排在后面
+        probe.attempts = attempt + 1
         return probe
 
     # 分块提交：既保持线程池占满，又能及时响应停止请求
@@ -970,7 +1120,28 @@ def scan_platform(
                     future.cancel()
                 pending = {f for f in pending if not f.cancelled()}
 
-    passed.sort(key=lambda p: p.latency_ms or 1e9)
+    # 排序：延迟优先，同样延迟时把「重试过的」排后面（稳定性更好）
+    passed.sort(key=lambda p: (p.latency_ms or 1e9, p.attempts))
+
+    # 延迟门槛：超过就丢掉（0 = 不设门槛）
+    if getattr(platform, "max_latency_ms", 0) and platform.max_latency_ms > 0:
+        limit_ms = float(platform.max_latency_ms)
+        dropped = [p for p in passed if p.latency_ms > limit_ms]
+        if dropped:
+            passed = [p for p in passed if p.latency_ms <= limit_ms]
+            if not quiet:
+                log(f"[{platform.name}] 丢弃延迟 > {limit_ms:g}ms 的节点 {len(dropped)} 个，"
+                    f"剩 {len(passed)} 个")
+
+    # 只保留最快的 N 个（0 = 全部保留）
+    top_n = int(getattr(platform, "top_n", 0) or 0)
+    if top_n > 0 and len(passed) > top_n:
+        trimmed = passed[:top_n]
+        if not quiet:
+            log(f"[{platform.name}] 只保留最快 {top_n} 个节点"
+                f"（丢弃 {len(passed) - top_n} 个）")
+        passed = trimmed
+
     error = "已被用户停止（结果不完整）" if stop_event is not None and stop_event.is_set() else ""
     return ScanOutcome(platform, len(targets), passed, total - len(passed),
                        time.perf_counter() - started, error)

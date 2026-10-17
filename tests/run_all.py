@@ -29,6 +29,8 @@ SUITES = {
     "cli_e2e": "CLI 端到端：scan 落盘 / monitor 多轮 / 参数校验 / 运营商选择",
     "shutdown": "优雅退出：SIGTERM/SIGINT 停止循环并退出 0 + 结果文件原子替换",
     "resources": "并发自适应：按可用内存/核数限制探测进程数（防小内存机器卡死）",
+    "probe": "探测实现：进程内 socket+ssl 与 curl 行为一致（状态码/超时/TLS/对端 IP）",
+    "filter": "结果筛选：延迟门槛 / 只取最快 N 个 / 稳定性排序",
 }
 
 # 需要 Docker 的套件不放进 run_all（它单独跑）：

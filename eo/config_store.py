@@ -107,6 +107,8 @@ class AppConfig:
     webhook: str = ""
     notify_always: bool = False
     log_buffer: int = 500              # 实时日志保留条数（环形缓冲）
+    max_latency_ms: float = 0.0        # 延迟门槛：超过就丢弃；0 = 不限
+    top_n: int = 0                     # 只保留最快的 N 个；0 = 全部保留
     web_token: str = ""                # 网页访问令牌，空则自动生成
     auto_run: bool = False             # 容器启动后是否自动开始循环
     platforms: dict[str, PlatformSettings] = field(default_factory=dict)
@@ -128,6 +130,8 @@ class AppConfig:
             "webhook": self.webhook,
             "notify_always": self.notify_always,
             "log_buffer": self.log_buffer,
+            "max_latency_ms": self.max_latency_ms,
+            "top_n": self.top_n,
             "auto_run": self.auto_run,
             "web_token_set": bool(self.web_token),
             "web_token_masked": _mask(self.web_token) if self.web_token else "",
@@ -141,7 +145,8 @@ class AppConfig:
         config = cls()
         for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                     "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
-                    "notify_always", "log_buffer", "web_token", "auto_run"):
+                    "notify_always", "log_buffer", "max_latency_ms", "top_n",
+                    "web_token", "auto_run"):
             if key in data and data[key] is not None:
                 setattr(config, key, data[key])
 
@@ -233,6 +238,8 @@ def env_overrides() -> dict:
         "EO_TIMEOUT": ("timeout", float),
         "EO_RETRIES": ("retries", int),
         "EO_LOG_BUFFER": ("log_buffer", int),
+        "EO_MAX_MS": ("max_latency_ms", float),
+        "EO_TOP": ("top_n", int),
         "EO_WEBHOOK": ("webhook", str),
         "EO_AUTO_RUN": ("auto_run", lambda v: str(v).strip().lower() in ("1", "true", "yes", "on")),
         "EO_DNS_SYNC": ("dns_mode", str),
@@ -353,7 +360,8 @@ class ConfigStore:
 
             for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                         "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
-                        "notify_always", "log_buffer", "auto_run"):
+                        "notify_always", "log_buffer", "max_latency_ms", "top_n",
+                        "auto_run"):
                 if key in patch and patch[key] is not None:
                     setattr(config, key, patch[key])
                     self.explicit.add(key)

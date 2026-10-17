@@ -84,8 +84,14 @@ if cores:
           f"{auto} vs {max(4, cores * 8)}")
 if avail:
     check("按内存算不超过可用内存的 60%",
-          auto * core.PER_PROBE_MB <= avail * 0.6 + core.PER_PROBE_MB,
-          f"{auto}×{core.PER_PROBE_MB}MB vs {round(avail)}MB")
+          auto * core.probe_memory_mb() <= avail * 0.6 + core.probe_memory_mb(),
+          f"{auto}×{core.probe_memory_mb()}MB vs {round(avail)}MB")
+check("默认实现下每个并发只按几十 KB 估算（不再是 curl 的 12MB）",
+      core.probe_memory_mb() <= 1.0, f"{core.probe_memory_mb()}MB")
+os.environ["EO_PROBE"] = "curl"
+check("切到 curl 实现时按 12MB 估算", core.probe_memory_mb() == core.PER_PROBE_MB,
+      f"{core.probe_memory_mb()}MB")
+os.environ.pop("EO_PROBE", None)
 
 print()
 print("5) 端到端接线：scan_platforms 真的把 workers 压下来了")
