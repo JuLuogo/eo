@@ -304,7 +304,14 @@ if [ "$USE_GHCR" = "1" ]; then
     EO_IMAGE="edge-optimizer:latest" $COMPOSE up -d --no-build
 else
     say "本机构建并启动（首次约 2~5 分钟）…"
-    $COMPOSE up -d --build
+    # 不用 `$COMPOSE up -d --build`：Compose 的 build 要求 buildx >= 0.17，
+    # Debian/Ubuntu 自带的 docker.io 往往只有 0.13，会报
+    #   compose build requires buildx 0.17.0 or later
+    # 经典 docker build 不依赖 buildx。
+    BUILD_IMG="$(env_peek EO_IMAGE)"
+    [ -n "$BUILD_IMG" ] || BUILD_IMG="edge-optimizer:latest"
+    docker build -t "$BUILD_IMG" . || die "镜像构建失败"
+    EO_IMAGE="$BUILD_IMG" $COMPOSE up -d --no-build
 fi
 
 # --------------------------------------------------------------------------

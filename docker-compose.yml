@@ -1,17 +1,32 @@
-# 多平台边缘节点优选 —— Docker 一键部署
+# 多平台边缘节点优选 —— Docker Compose 部署
 #
-#   ./docker-setup.sh          # 交互式生成 .env（问运营商和端口），然后按提示启动
-#   docker compose up -d --build
-#   docker compose logs -f     # 启动日志里有网页地址和访问令牌
-#   docker compose down        # 停止
+# 最快用法（镜像已由 GitHub Actions 构建好，直接用现成的）：
+#     docker compose pull && docker compose up -d --no-build
 #
-# 打开 http://<服务器IP>:<EO_WEB_PORT>/?token=<日志里打印的令牌>
+# 不想依赖 GHCR（境内拉不动时）就在本机构建：
+#     ./rebuild.sh                  # 等价于 docker build + compose up -d --no-build
+#   （不要用 `docker compose up -d --build`：它要求 buildx >= 0.17，
+#     Debian/Ubuntu 自带的 docker.io 常常只有 0.13，会直接报错）
+#
+#     docker compose logs -f        # 启动日志里有网页地址和访问令牌
+#     docker compose down           # 优雅停止（收到 SIGTERM，退出码 0）
+#     docker compose restart        # 重启
+#
+# 打开 http://<服务器IP>:<网页端口>/?token=<日志里的令牌>
+#
+# 配置来源：同目录的 .env（compose 会自动读取用于 ${...} 插值）。
+#   * 所有受支持的变量都在下面 environment: 里列了一遍，并在 .env 里取值；
+#     想加别的变量，除了写进 .env，还要在 environment: 里加一行才会进容器。
+#   * 故意不用 env_file：带 required 的写法要求 Compose v2.24+，
+#     老版本服务器会直接报解析错误；而且 .env 缺失时也不会整套起不来。
 #
 # 关键点：
-#   * config/ 用 volume 挂载 —— 网页上改的配置与密钥持久化在这里，重建镜像不丢
-#   * results/ 与 targets/ 也挂载出来，重建镜像不丢数据，改网段不用重新 build
-#   * 容器内所有平台合计 TCP 连接速率由 EO_RATE 限制（默认 100/秒，网页上可改）
-#   * 真正下发 DNS 需要：网页模式选「执行」+ 勾选确认（双重保险）
+#   * config/ 挂载 —— 网页上改的配置与密钥持久化在这里，重建镜像不丢
+#   * results/ 挂载 —— 优选结果与历史，重建镜像不丢
+#   * targets/ 挂载 —— 改网段不用重建镜像；万一目录是空的，
+#     容器启动时会从镜像内置的种子补齐（EO_SEED_TARGETS=0 可关掉）
+#   * 所有平台合计 TCP 连接速率由 EO_RATE 限制（默认 100/秒，网页上可改）
+#   * 真正下发 DNS 需要：EO_DNS_SYNC=push + EO_CONFIRM_DNS=yes（双重保险）
 services:
   optimizer:
     build:
@@ -23,20 +38,18 @@ services:
         # apt 源：默认阿里云。境内直连 deb.debian.org 常失败，需要官方源时改成 deb.debian.org
         APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
         # INSTALL_DNS_SDK: "0"     # 纯优选（不装华为云 SDK），构建更快
-    # 镜像名：默认本地构建产物；用 GHCR 现成镜像时会被 onekey.sh 覆盖为
-    # ghcr.io/julugo/eo:latest（并配合 --no-build 跳过构建）
+    # 镜像名：默认本地构建产物；用 GHCR 现成镜像时设为
+    #   EO_IMAGE=ghcr.io/julugo/eo:latest
     image: ${EO_IMAGE:-edge-optimizer:latest}
     container_name: edge-optimizer
     restart: unless-stopped
-    env_file:
-      # .env 由 ./docker-setup.sh 生成（或 cp .env.example .env）
-      # required: false 让它缺失时也不报错，改用下面的默认值启动
-      - path: .env
-        required: false
     environment:
-      TZ: ${TZ:-Asia/Shanghai}    # 时间窗口与日志时间按此时区
-      EO_MODE: web                # web=带管理页面；monitor=纯后台循环；scan=跑一次
+      TZ: ${TZ:-Asia/Shanghai}            # 时间窗口与日志时间按此时区
+      EO_MODE: ${EO_MODE:-web}            # web=带管理页面；monitor=纯后台循环；scan=跑一次
       EO_WEB_PORT: "${EO_WEB_PORT:-8787}"
+      # 容器内监听地址。只想本机反代/SSH 隧道访问就设 127.0.0.1
+      EO_WEB_HOST: "${EO_WEB_HOST:-0.0.0.0}"
+      EO_WEB_TOKEN: "${EO_WEB_TOKEN:-}"   # 留空则自动生成并写入 config/config.json
       EO_NETWORK: "${EO_NETWORK:-lt}"     # lt=联通 / dx=电信 / yd=移动
       # 留空即可：程序会按 EO_NETWORK 自动推导出 eo-<运营商>,esa-<运营商>,cft-<运营商>。
       # 只有想精确指定平台组合时才需要显式填写。
@@ -44,18 +57,36 @@ services:
       EO_RATE: "${EO_RATE:-100}"          # ★ 全平台合计 TCP 连接上限 100/秒
       EO_INTERVAL: "${EO_INTERVAL:-300}"
       EO_WINDOW: "${EO_WINDOW:-}"         # 例如 00:00-07:00，留空=全天
+      EO_WORKERS: "${EO_WORKERS:-}"       # 单平台并发数，留空用内置默认 80
+      EO_TIMEOUT: "${EO_TIMEOUT:-}"       # 单次探测超时秒数，留空用内置默认 3
+      EO_RETRIES: "${EO_RETRIES:-}"       # 失败重试次数，留空用内置默认 1
+      EO_PING: "${EO_PING:-}"             # 1=探测前先 ping 预筛（默认关，部分机房屏蔽 ICMP）
+      EO_LOG_BUFFER: "${EO_LOG_BUFFER:-500}"   # 网页实时日志保留条数（内存环形缓冲）
+      EO_AUTO_RUN: "${EO_AUTO_RUN:-false}"     # true=容器启动即开始循环
+      EO_CYCLES: "${EO_CYCLES:-}"         # monitor 模式跑几轮，留空=一直跑
+      EO_EXTRA_ARGS: "${EO_EXTRA_ARGS:-}" # 追加任意参数，如 "--ping --retries 2"
       EO_DNS_SYNC: "${EO_DNS_SYNC:-none}" # none | dry-run | push
       EO_CONFIRM_DNS: "${EO_CONFIRM_DNS:-no}"   # push 时需要 yes
-      EO_WEB_TOKEN: "${EO_WEB_TOKEN:-}"   # 留空则自动生成并写入 config/config.json
+      EO_SHUTDOWN_GRACE: "${EO_SHUTDOWN_GRACE:-5}"  # 停止时留给本轮收尾的秒数
+      EO_SEED_TARGETS: "${EO_SEED_TARGETS:-1}"      # 1=挂载目录缺网段文件时自动补
       EO_WEBHOOK: "${EO_WEBHOOK:-}"
+      # ---- 凭据（也可以用网页表单填，会被写进 config/config.json）----
       HUAWEI_AK: "${HUAWEI_AK:-}"
       HUAWEI_SK: "${HUAWEI_SK:-}"
+      HUAWEI_REGION: "${HUAWEI_REGION:-cn-north-4}"
+      HUAWEI_ZONE: "${HUAWEI_ZONE:-}"
+      HUAWEI_RECORD: "${HUAWEI_RECORD:-}"
+      CLOUDFLARE_API_TOKEN: "${CLOUDFLARE_API_TOKEN:-}"
+      # ---- 挂载目录属主（默认 10001，改成宿主机你的 UID 可直接 ls）----
+      EO_APP_UID: "${EO_APP_UID:-10001}"
+      EO_APP_GID: "${EO_APP_GID:-10001}"
     ports:
-      - "${EO_WEB_PORT:-8787}:${EO_WEB_PORT:-8787}"
+      # 前面是宿主机监听地址：默认所有网卡。只想本机访问就 EO_BIND=127.0.0.1
+      - "${EO_BIND:-0.0.0.0}:${EO_WEB_PORT:-8787}:${EO_WEB_PORT:-8787}"
     volumes:
       - ./config:/app/config            # 配置与密钥（持久化）
       - ./results:/app/results          # 优选结果与历史
-      - ./targets:/app/targets          # 网段文件；改完不用重建镜像
+      - ./targets:/app/targets          # 网段文件；空目录会自动从镜像补齐
     ulimits:
       nofile:
         soft: 8192
@@ -63,5 +94,5 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "10m"
+        max-size: "10m"                 # 不限制的话 docker 日志会把磁盘写满
         max-file: "3"

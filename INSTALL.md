@@ -23,54 +23,100 @@ curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo s
 - [八、三台机器分工](#八三台机器联通电信移动怎么部署)
 - [九、境内网络问题](#九境内网络问题github--镜像拉取)
 - [十、常见问题](#十常见问题)
+- [十一、安全与隐患清单](#十一安全与隐患清单)
 
 ---
 
 ## 一、一键安装（推荐）
 
-### 1.1 Docker 一条命令（最省事）
+### 1.1 Docker Compose（推荐，一条命令）
 
-在服务器上执行**一条命令**即可完成：拉代码 → 写配置 → 构建 → 启动 → 打印访问地址。
-
-把开头的 5 个值换成你自己的（`HUAWEI_AK` / `HUAWEI_SK` 是华为云密钥）：
+镜像由 GitHub Actions 自动构建，服务器上不用编译。**把 `EO_NETWORK=lt` 换成这台机器
+的运营商**（`lt`=联通 / `dx`=电信 / `yd`=移动），整行执行：
 
 ```bash
-DIR=/opt/edge-optimizer EO_NETWORK=lt EO_WEB_PORT=8787 \
-HUAWEI_AK=你的AccessKeyId HUAWEI_SK=你的AccessKeySecret \
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
+sudo bash -c 'set -e; mkdir -p /opt/eo; cd /opt/eo; [ -d .git ] || git clone --depth 1 https://gitee.com/peroe/eo.git .; [ -f .env ] || printf "EO_NETWORK=lt\nEO_WEB_PORT=8787\nEO_IMAGE=ghcr.io/julugo/eo:latest\n" > .env; IMG=$(sed -n "s/^EO_IMAGE=//p" .env | tail -1); IMG=${IMG:-edge-optimizer:latest}; docker compose pull >/dev/null 2>&1 || { echo "== GHCR 拉不到，改为本机构建（约 2~5 分钟）=="; docker build -t "$IMG" .; }; docker compose up -d --no-build; sleep 6; docker compose logs --tail=40 | grep -E "监听地址|访问令牌"'
 ```
 
-- `EO_NETWORK`：`lt`=联通 / `dx`=电信 / `yd`=移动（留空会自动识别本机运营商）
-- `EO_WEB_PORT`：留空则按运营商取默认（lt=8787、dx=8788、yd=8789）
-- 其他可调项：`EO_RATE`（限速，默认 100）、`EO_INTERVAL`（间隔，默认 300）、
-  `EO_WINDOW`（时间窗口）、`EO_DNS_SYNC`（默认 `dry-run` 只预览不下发）
-- `EO_SHUTDOWN_GRACE`（默认 5）：收到 `docker stop` / SIGTERM 后，留给
-  「正在跑的这一轮」收尾的秒数，然后才退出。详见下方「停止与重启」。
+这一行做的事：
 
-执行完会打印：
+1. 拉代码到 `/opt/eo`（已存在则复用，不覆盖你的 `.env`）；
+2. 写 `.env`：运营商、端口、镜像地址 —— 端口的默认值是 lt=8787 / dx=8788 / yd=8789；
+3. `docker compose pull` 优先拉 GHCR 上构建好的镜像；**拉不到就自动退回本机构建**
+   （用经典 `docker build`，不依赖 buildx；apt/pip 源已默认国内镜像）；
+4. 启动容器，并把日志里的访问地址与令牌打出来。
+
+> 这条命令在本机 WSL（Debian 自带 Docker 26.1.5 + Compose 5.6.0，buildx 仅 0.13）
+> 实测通过：GHCR 拉取失败 → 自动本机构建 → 容器起来 → 网页 200 → 真实扫描启动，
+> 全程 27 秒（不含首次构建时间）。
+
+之后常用操作：
+
+```bash
+cd /opt/eo
+docker compose ps                 # 状态（含健康检查）
+docker compose logs -f            # 实时日志（访问令牌也在启动日志里）
+docker compose restart            # 重启
+docker compose down               # 优雅停止（SIGTERM，退出码 0，约 5 秒）
+docker compose up -d              # 只改了 .env 后应用
+./rebuild.sh                      # 改了代码/要重建镜像时用这个
+```
+
+> ⚠️ **别用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
+> 而 Debian / Ubuntu 源里的 `docker.io` 自带的多是 0.13，会直接失败：
+> `compose build requires buildx 0.17.0 or later`。
+> `./rebuild.sh` 用经典 `docker build` + `up -d --no-build`，任何 Docker 版本都能用。
+
+**要自动下发 DNS**，把密钥写进 `/opt/eo/.env` 再 `docker compose up -d`：
+
+```bash
+cd /opt/eo
+cat >> .env <<'EOF'
+HUAWEI_AK=你的AccessKeyId
+HUAWEI_SK=你的AccessKeySecret
+EO_DNS_SYNC=dry-run
+EOF
+chmod 600 .env
+docker compose up -d
+```
+
+> 先用 `dry-run`（只预览不下发）确认记录名和网段没问题，再改成 `push`。
+> 详见 [十一、安全与隐患清单](#十一安全与隐患清单)。
+
+**三台机器**：分别在 `.env` 里设 `EO_NETWORK=lt/dx/yd` 与 `EO_WEB_PORT=8787/8788/8789`。
+
+**网段文件**：`./targets` 是挂载目录。如果是空的（比如你只下载了 compose 文件、
+没 clone 仓库），容器启动时会自动从镜像内置的种子补齐 `eo.txt` / `esa.txt` / `cft.txt`，
+**已有文件不会被覆盖**；想关掉就设 `EO_SEED_TARGETS=0`。
+
+> **想用 GitHub 上预构建好的镜像但拉不动**：GHCR 在境内连通性差，且普通
+> registry 加速代理不了 ghcr.io。三条路 ——
+> A) 去掉 `EO_IMAGE` 那行，让 compose 本机构建（最稳）；
+> B) 包为私有时先 `echo <GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin`
+>    （令牌需勾选 `read:packages`）；
+> C) 把镜像推到国内仓库后把 `EO_IMAGE` 改成那个地址。
+
+
+执行完日志里会有（`docker compose logs | grep -E "监听地址|访问令牌"`）：
 
 ```
   ==========================================================
-   运营商   : 联通 (lt)
-   端口     : 8787
-   访问地址 : http://<服务器IP>:8787/?token=xxxxxxxx
+    Web 控制台已启动
   ==========================================================
-
-  查看日志   : cd /opt/edge-optimizer && docker compose logs -f
+    监听地址   : http://0.0.0.0:8787
+    访问令牌   : xxxxxxxxxxxxxxxxxxxxxxxx
+    带令牌访问 : http://<服务器IP>:8787/?token=xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-> **想用 GitHub 上预构建好的镜像**（不在本机构建，更快）：
-> 镜像由 GitHub Actions 自动构建推送到 GHCR，加 `USE_GHCR=1` 即可：
+> 另一种更"傻瓜"的交互式脚本（会问你运营商和端口、自动识别本机运营商）：
 >
 > ```bash
-> USE_GHCR=1 IMAGE=ghcr.io/julugo/eo:latest DIR=/opt/edge-optimizer \
-> EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
+> DIR=/opt/eo EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
 > bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
 > ```
 >
-> GHCR 包默认是私有的，需要先登录（用 GitHub 私人令牌）：
-> `echo <令牌> | docker login ghcr.io -u JuLuogo --password-stdin`
-> 或在 GitHub 上把该 Package 的可见性改成 Public 后即可匿名拉取。
+> 它同样支持 `USE_GHCR=1 IMAGE=ghcr.io/julugo/eo:latest` 走预构建镜像。
+> 不过 `onekey.sh` 从 GitHub raw 拉取，境内可能要先过一层文件代理。
 
 ### 1.2 裸机安装（不用 Docker）
 
@@ -334,7 +380,7 @@ cd /opt/edge-optimizer
 ./docker-setup.sh
 
 # 3. 构建并启动
-docker compose up -d --build
+./rebuild.sh
 docker compose logs -f          # 启动日志里有访问地址和令牌
 ```
 
@@ -356,7 +402,7 @@ docker compose logs -f          # 启动日志里有访问地址和令牌
 > ```bash
 > cp .env.example .env
 > vi .env                       # 至少改 EO_NETWORK=lt（或 dx/yd）
-> docker compose up -d --build
+> ./rebuild.sh
 > ```
 >
 > 仓库里这几个脚本已标记为可执行（`100755`），正常 `git clone` 出来就能直接运行；
@@ -368,10 +414,10 @@ docker compose logs -f          # 启动日志里有访问地址和令牌
 cd /opt/edge-optimizer
 cp .env.example .env
 vi .env                         # 改 EO_NETWORK=lt/dx/yd、EO_WEB_PORT
-docker compose up -d --build
+./rebuild.sh
 ```
 
-> **不需要任何镜像仓库**。镜像是你本机 `docker build` 出来的，`docker compose up -d --build`
+> **不需要任何镜像仓库**。镜像是你本机 `docker build` 出来的，`./rebuild.sh`
 > 这一条就直接构建并运行了。Gitee 只存代码，不存 Docker 镜像。
 
 ### 7.3 常用命令
@@ -384,7 +430,7 @@ docker compose logs -f                              # 实时日志
 docker compose logs -f --tail 200                   # 最近 200 行
 docker compose restart                              # 重启
 docker compose down                                 # 停止并删除容器（保留数据卷挂载的目录）
-docker compose up -d --build                        # 改代码后重建并启动
+./rebuild.sh                                        # 改代码后重建并启动（不要用 compose --build）
 
 docker compose run --rm optimizer doctor            # 环境体检
 docker compose run --rm optimizer scan -p eo-lt -q  # 手动跑一轮优选
@@ -811,3 +857,186 @@ ssh -L 8787:127.0.0.1:8787 user@服务器
 
 另外：网页上改过的值优先于 `.env`。控制台「常用变量」面板会明确标出每项当前
 生效值的来源，一眼能看出是谁在生效。
+
+---
+
+## 十一、安全与隐患清单
+
+部署前请逐条过一遍。这些都不是理论风险 —— 大部分是实际踩过的坑。
+
+### 11.1 控制台默认对公网开放
+
+`docker compose` 默认把端口发布到 `0.0.0.0`，任何扫到端口的人都能看到登录页。
+虽然有令牌保护，但**令牌会出现在 URL 里**（`?token=xxx`），可能留在浏览器历史、
+反向代理日志、以及截图里。
+
+收敛办法（任选）：
+
+```bash
+# A) 只监听本机，用 SSH 隧道访问（最省事、最安全）
+#    /opt/eo/.env 里改：EO_BIND=127.0.0.1
+docker compose up -d
+ssh -L 8787:127.0.0.1:8787 user@服务器     # 本地打开 http://127.0.0.1:8787/?token=...
+
+# B) 只允许自己的 IP（注意：必须用 DOCKER-USER 链，见 11.2）
+# C) 前面挂 Nginx/Caddy 做 HTTPS + 基本认证
+```
+
+`EO_BIND` 控制**宿主机**监听地址，`EO_WEB_HOST` 控制**容器内**监听地址，两个都支持
+`127.0.0.1`。
+
+### 11.2 ⚠️ ufw / firewalld 挡不住 Docker 发布的端口
+
+这是最容易误判的一条。Docker 直接往 iptables 里写 DNAT 规则，**绕过 ufw 的 INPUT 链**：
+
+```bash
+sudo ufw deny 8787          # ← 看起来挡住了
+curl http://<公网IP>:8787/  # ← 实际还能访问
+```
+
+要么用 `EO_BIND=127.0.0.1` 从根上不发布到公网，要么把规则加进 `DOCKER-USER` 链
+（该链在 Docker 规则之前生效），要么装 `ufw-docker`。
+
+### 11.3 访问令牌 = 控制台全部权限
+
+拿到令牌就能改配置、触发扫描、**下发 DNS**。它存在 `config/config.json`（权限 600）。
+
+轮换令牌（令牌泄露后立刻做）：
+
+```bash
+curl -s -X POST -H "Authorization: Bearer <旧令牌>" -H 'Content-Type: application/json' \
+     -d '{"rotate_web_token":true}' http://127.0.0.1:8787/api/config
+# 新令牌在 config/config.json 的 web_token 字段里
+sudo grep -o '"web_token": "[^"]*"' config/config.json
+```
+
+> 注意：轮换后旧令牌立即失效，**只有服务器上的 config.json 里有新令牌**，
+> 别把自己锁在外面。也可以在 `.env` 里显式设 `EO_WEB_TOKEN=<自己定>` 再重启。
+
+### 11.4 凭据放在哪、会不会进镜像/仓库
+
+| 凭据 | 位置 | 权限 |
+| --- | --- | --- |
+| `HUAWEI_AK` / `HUAWEI_SK` / `CLOUDFLARE_API_TOKEN` | 服务器 `.env`，或网页表单（写进 `config/config.json`） | `onekey.sh` / `deploy.sh` / `docker-setup.sh` 都会 `chmod 600 .env`；手动创建的记得自己改。`config.json` 固定 600 |
+| 访问令牌 `web_token` | `config/config.json` | 600 |
+| GitHub / GHCR 令牌 | 只应放在服务器本地或 CI secrets | 不要写进仓库 |
+
+`.env` 已被 `.gitignore` 与 `.dockerignore` 排除，且 Dockerfile 只 COPY 指定文件，
+**不会被打进镜像**。网页接口回显密钥时一律打码（`/api/config` 只给 `web_token_set`）。
+
+### 11.5 GHCR 镜像是私有还是公开
+
+GitHub 上「仓库公开」不等于「镜像包公开」——GHCR 的 Package 可见性是**单独设置**的。
+拉不动先按 11.5 的两条路走：
+
+```bash
+# 判断是私有还是网络问题
+docker pull ghcr.io/julugo/eo:latest
+
+# A) 包是私有的：登录后拉（令牌需勾选 read:packages）
+echo <GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin
+
+# B) 想匿名拉：到 GitHub → 你的头像 → Your packages → eo →
+#    Package settings → Danger Zone → Change visibility → Public
+```
+
+若 GHCR 在境内拉不动（普通 registry 镜像加速代理不了 ghcr.io），让本机构建：
+
+```bash
+cd /opt/eo && ./rebuild.sh
+```
+
+> 注意：**不要用 `docker compose up -d --build`** —— Compose 的 build 依赖
+> buildx ≥ 0.17（Debian/Ubuntu 自带的常只有 0.13），会报
+> `compose build requires buildx 0.17.0 or later`。`./rebuild.sh` 用的是经典
+> `docker build`，不依赖 buildx。
+
+镜像目前**只构建了 linux/amd64**。ARM 服务器（如华为云鲲鹏）需要本机构建，或改用
+`docker buildx build --platform linux/arm64`。
+
+### 11.6 目录属主是 10001（不是你的用户）
+
+容器启动时会把 `config/`、`results/`、`targets/` 的属主改成容器内用户 `10001`，
+所以你用普通用户 `ls` 会「看不到内容」、也**改不了 `targets/` 里的文件**：
+
+```bash
+sudo ls -la /opt/eo/results/          # 正常现象，不是权限坏了
+sudo vi /opt/eo/targets/eo.txt        # 改网段要 sudo
+
+# 想让属主变成你自己（宿主机 UID 1000）：
+#   /opt/eo/.env 里设 EO_APP_UID=1000 / EO_APP_GID=1000，然后 docker compose up -d
+```
+
+### 11.7 结果与历史的磁盘占用
+
+- 容器日志：compose 已限制 `max-size=10m` / `max-file=3`，最多 30MB，不会写满磁盘。
+- 网页实时日志：内存环形缓冲 500 条，**不落盘**。
+- `results/*.txt`：覆盖写，固定大小。
+- `results/history/*.jsonl`：**每轮追加一条**（含当轮全部可用 IP）。间隔 300 秒时
+  大约每天 288 条；按每个平台 50 个 IP 估算，一年约几百 MB。长期跑建议定期清理：
+
+```bash
+sudo truncate -s 0 /opt/eo/results/history/*.jsonl     # 清空历史
+# 或加一条 logrotate / cron 定期删旧文件
+```
+
+### 11.8 DNS 下发是危险操作（已做双重保险）
+
+默认 `EO_DNS_SYNC=none`（只优选、不碰解析）。真要下发必须同时满足：
+
+1. `EO_DNS_SYNC=push`；
+2. `EO_CONFIRM_DNS=yes`（Web 模式下还要在页面上勾选确认）。
+
+另外内置**解析量骤降保护**：新 IP 数远少于现有记录时会直接中止（阈值见
+`_shrunk_too_much`），只有显式 `--force` 才允许缩容。首次真实下发前建议先
+`docker compose run --rm optimizer scan -p eo-lt --dns --dry-run` 预览。
+
+### 11.9 ⚠️ `docker compose up -d --build` 在老版本 Docker 上会直接失败
+
+Compose 的 `build` 子命令要求 **buildx ≥ 0.17**。Debian / Ubuntu 官方源里的
+`docker.io` 包自带的 buildx 往往只有 **0.13**，于是：
+
+```
+compose build requires buildx 0.17.0 or later
+```
+
+结果就是「构建并启动」这一步直接断掉，容器起不来（而 `docker pull` 与此无关，
+所以拉现成镜像的路径不受影响）。判断与解决：
+
+```bash
+docker buildx version          # 看版本；< 0.17 就会踩这个坑
+cd /opt/eo && ./rebuild.sh     # 用经典 docker build，绕过 buildx
+
+# 或者升级 docker 到官方源版本（buildx 插件会一起装上）
+curl -fsSL https://get.docker.com | sh
+```
+
+`onekey.sh` 与 `docker-setup.sh` 已经改成用经典 `docker build` + `up -d --no-build`，
+不会再踩这个坑。
+
+### 11.10 部署前检查清单
+
+```bash
+cd /opt/eo
+docker compose ps                       # 容器是否 running / healthy
+docker compose logs --tail=50           # 有没有报错、令牌是多少
+docker compose run --rm optimizer doctor    # ★ 链路体检（有代理会报「链路不可信」）
+docker compose run --rm optimizer list --all-platforms   # 平台是否按运营商正确展开
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/healthz   # 期望 200
+```
+
+`doctor` 报「链路不可信」说明本机 HTTPS 被代理接管，此时优选结果无意义且程序会
+拒绝下发 DNS —— 换干净网络的服务器。
+
+### 11.11 备份与恢复
+
+需要备份的只有三样（都在挂载目录里，重建镜像不丢）：
+
+```bash
+sudo tar czf eo-backup-$(date +%F).tar.gz -C /opt/eo .env config results
+# 恢复：解回 /opt/eo 后 docker compose up -d
+```
+
+`targets/` 不用备份：镜像内置了一份种子，缺文件时启动会自动补齐
+（`EO_SEED_TARGETS=0` 可关掉）。
+

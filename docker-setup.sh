@@ -93,6 +93,20 @@ env_set() {
     fi
 }
 
+build_and_up() {
+    # 刻意不用 `$COMPOSE up -d --build`：Compose 的 build 要求 buildx >= 0.17，
+    # 而 Debian/Ubuntu 源里的 docker.io 常常只有 0.13，会直接失败：
+    #   compose build requires buildx 0.17.0 or later
+    # 经典 docker build 不依赖 buildx，任何 Docker 版本都能用。
+    local img
+    img="$(env_get EO_IMAGE '')"
+    [ -n "$img" ] || img="edge-optimizer:latest"
+    if ! docker build -t "$img" .; then
+        die "镜像构建失败。可检查网络（境内可设 SET_REGISTRY_MIRROR=1 换源）后重试"
+    fi
+    EO_IMAGE="$img" $COMPOSE up -d --no-build
+}
+
 # --------------------------------------------------------------------------
 # 3. 交互配置
 # --------------------------------------------------------------------------
@@ -186,7 +200,7 @@ say "配置完成：运营商=$(carrier_label "$CARRIER")  端口=$PORT"
 # --------------------------------------------------------------------------
 if [ "$UP" = "1" ]; then
     say "开始构建并启动（首次构建需要几分钟）…"
-    $COMPOSE up -d --build
+    build_and_up
     sleep 3
     IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
     printf '\n'
@@ -196,9 +210,10 @@ if [ "$UP" = "1" ]; then
 else
     printf '\n'
     say "下一步执行："
-    printf '    %s up -d --build      # 构建并启动\n' "$COMPOSE"
-    printf '    %s logs -f            # 看日志（里面有访问地址）\n' "$COMPOSE"
-    printf '    ./docker-setup.sh --up   # 或直接跑这一条，一步到位\n\n'
+    printf '    ./docker-setup.sh --up   # 构建并启动（等价于下面两条）\n'
+    printf '    docker build -t edge-optimizer:latest .\n'
+    printf '    %s up -d --no-build\n\n' "$COMPOSE"
+    printf '    %s logs -f            # 看日志（里面有访问地址）\n\n' "$COMPOSE"
     say "国内拉不动基础镜像时，可指定镜像源后重试："
     printf '    docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \\\n'
     printf '                 -t edge-optimizer:latest .\n\n'

@@ -5,9 +5,39 @@
 
 ---
 
-## 🚀 快速开始（一行命令）
+## 🚀 快速开始
 
-服务器上直接跑，不需要先 clone：
+### 方式一：Docker Compose（推荐，一条命令）
+
+镜像由 GitHub Actions 自动构建，服务器上不用编译。把结尾的 `EO_NETWORK` 换成这台机器
+所在的运营商（`lt`=联通 / `dx`=电信 / `yd`=移动）后整行执行：
+
+```bash
+sudo bash -c 'set -e; mkdir -p /opt/eo; cd /opt/eo; [ -d .git ] || git clone --depth 1 https://gitee.com/peroe/eo.git .; [ -f .env ] || printf "EO_NETWORK=lt\nEO_WEB_PORT=8787\nEO_IMAGE=ghcr.io/julugo/eo:latest\n" > .env; IMG=$(sed -n "s/^EO_IMAGE=//p" .env | tail -1); IMG=${IMG:-edge-optimizer:latest}; docker compose pull >/dev/null 2>&1 || { echo "== GHCR 拉不到，改为本机构建（约 2~5 分钟）=="; docker build -t "$IMG" .; }; docker compose up -d --no-build; sleep 6; docker compose logs --tail=40 | grep -E "监听地址|访问令牌"'
+```
+
+它会：拉代码 → 写 `.env` → 优先拉现成镜像（拉不到就本机构建）→ 启动 → 打印访问地址与令牌。
+之后所有操作都用 compose：
+
+```bash
+cd /opt/eo
+docker compose ps                 # 状态
+docker compose logs -f            # 实时日志（访问令牌也在里面）
+docker compose restart            # 重启
+docker compose down               # 优雅停止（收到 SIGTERM，退出码 0）
+docker compose up -d              # 只改了 .env 后应用
+./rebuild.sh                      # 改了代码/要重建镜像时用这个（见下方说明）
+```
+
+> ⚠️ **不要用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
+> 而 Debian / Ubuntu 源里的 `docker.io` 自带的多是 0.13，会直接报
+> `compose build requires buildx 0.17.0 or later`。
+> 仓库里的 `./rebuild.sh` 用经典 `docker build` + `up -d --no-build` 绕开这个问题。
+
+> 三台机器分别设 `EO_NETWORK=lt/dx/yd` 和 `EO_WEB_PORT=8787/8788/8789`。
+> 想自动下发 DNS，把 `HUAWEI_AK` / `HUAWEI_SK` 加进 `/opt/eo/.env` 再 `docker compose up -d`。
+
+### 方式二：裸机 systemd（不用 Docker）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo sh
@@ -37,6 +67,8 @@ sudo ./deploy.sh start && ./deploy.sh status   # 启动并打印访问地址 + �
 
 > 📖 **完整安装说明见 [INSTALL.md](INSTALL.md)** —— 含手动安装、Docker 安装、
 > 三台机器（联通/电信/移动）分工、常见问题排查。
+> ⚠️ **部署前请看一眼 [INSTALL.md 的安全与隐患清单](INSTALL.md#十一安全与隐患清单)**
+> （控制台对外暴露、ufw 挡不住 Docker 端口、凭据放哪等）。
 
 ### 已经 clone 了？
 
@@ -485,9 +517,9 @@ python run.py scan                      # 不带 -p = 全部已启用平台
 
 | | **脚本 + systemd**（推荐） | **Docker + compose** |
 | --- | --- | --- |
-| 首次部署 | `sudo ./deploy.sh install && ./deploy.sh start` | `docker compose up -d --build` |
+| 首次部署 | `sudo ./deploy.sh install && ./deploy.sh start` | `./rebuild.sh` |
 | 服务器依赖 | python3 + curl + venv | 只要 Docker |
-| 升级 | `git pull && ./deploy.sh restart` | `git pull && docker compose up -d --build` |
+| 升级 | `git pull && ./deploy.sh restart` | `git pull && ./rebuild.sh` |
 | 看日志 | `./deploy.sh logs`（journalctl） | `docker compose logs -f` |
 | 改配置 | 控制台 + `.env`，改完重启 | 控制台 + `.env` |
 | 排查问题 | 直接看进程/文件，最直观 | 多一层容器，偶发问题要多绕一圈 |
@@ -510,7 +542,7 @@ sudo ./deploy.sh start
 
 # 方式 B：Docker
 cp .env.example .env && vi .env
-docker compose up -d --build && docker compose logs -f
+./rebuild.sh && docker compose logs -f
 ```
 
 ### 10.1 三台机器怎么分工
@@ -533,7 +565,7 @@ docker compose up -d --build && docker compose logs -f
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+./rebuild.sh
 docker compose logs -f            # 启动日志里有访问地址和令牌
 ```
 

@@ -102,6 +102,45 @@ fi
 APP_UID="${EO_APP_UID:-10001}"
 APP_GID="${EO_APP_GID:-10001}"
 
+# --------------------------------------------------------------------------
+# 补齐网段文件
+#
+# compose 把 ./targets 挂到 /app/targets —— 好处是改网段不用重建镜像，
+# 但坏处是：宿主机那个目录如果是空的（只拉了 compose 文件、没 clone 仓库），
+# 挂载会把镜像里自带的 targets/ 整个盖掉，程序找不到网段文件，每轮都失败。
+# 所以镜像里另存了一份种子（/opt/eo-seed-targets），只在目标文件缺失时补上，
+# 已有文件一律不覆盖（用 cp -n）；想完全关掉就设 EO_SEED_TARGETS=0。
+# 注意：这一步必须放在 fix_ownership 之前，补进来的文件才能一起改成可写。
+# --------------------------------------------------------------------------
+seed_targets() {
+    [ "${EO_SEED_TARGETS:-1}" = "0" ] && return 0
+    [ -d /opt/eo-seed-targets ] || return 0
+    mkdir -p /app/targets 2>/dev/null || true
+    [ -d /app/targets ] || return 0
+
+    local added="" f base
+    for f in /opt/eo-seed-targets/*.txt; do
+        [ -e "$f" ] || continue
+        base=$(basename "$f")
+        [ -e "/app/targets/$base" ] && continue      # 已有就不动
+        if cp "$f" "/app/targets/$base" 2>/dev/null; then
+            added="$added $base"
+        fi
+    done
+
+    if [ -n "$added" ]; then
+        echo "[entrypoint] 已补齐网段文件:$added（来自镜像内置，未覆盖已有文件）"
+    fi
+    if [ -z "$(ls -A /app/targets 2>/dev/null)" ]; then
+        echo "[entrypoint] ⚠ /app/targets 为空且无法从镜像补齐：" >&2
+        echo "  优选会失败。请把网段文件放进宿主机的 targets/ 目录，或执行：" >&2
+        echo "    docker compose run --rm optimizer ranges --source all" >&2
+    fi
+    return 0
+}
+
+seed_targets
+
 fix_ownership() {
     local dirs="/app/config /app/results /app/history /app/targets" d
     if [ "$(id -u)" != "0" ]; then

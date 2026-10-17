@@ -73,6 +73,9 @@ RUN python -c "import eo, pathlib; p = pathlib.Path(eo.__file__); \
 
 # 网段与结果目录（实际部署时建议用 volume 挂载，避免重建镜像丢数据）
 COPY targets/ ./targets/
+# 再存一份种子：宿主机 ./targets 挂载为空时由入口脚本补进去，
+# 否则空挂载会把镜像自带的网段文件整个盖掉，部署完第一轮就失败。
+COPY targets/ /opt/eo-seed-targets/
 RUN mkdir -p results/history config && chmod +x docker-entrypoint.sh
 
 # 以非 root 运行，降低容器逃逸面。
@@ -81,7 +84,7 @@ RUN mkdir -p results/history config && chmod +x docker-entrypoint.sh
 # （deploy.sh / onekey.sh 都以 root 运行），若直接以非 root 启动会崩溃：
 #   PermissionError: [Errno 13] Permission denied: '/app/config/config.tmp'
 RUN useradd --create-home --uid 10001 optimizer \
-    && chown -R optimizer:optimizer /app
+    && chown -R optimizer:optimizer /app /opt/eo-seed-targets
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
