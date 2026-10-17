@@ -33,7 +33,7 @@ REPO="${REPO:-https://gitee.com/peroe/eo.git}"
 REPO_FALLBACK="${REPO_FALLBACK:-https://github.com/JuLuogo/eo.git}"
 BRANCH="${BRANCH:-main}"
 USE_GHCR="${USE_GHCR:-0}"
-IMAGE="${IMAGE:-ghcr.io/julugo/eo:latest}"
+IMAGE="${IMAGE:-ghcr.io/juluogo/eo:latest}"
 
 say()  { printf '\033[1;34m[onekey]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }

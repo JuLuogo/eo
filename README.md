@@ -7,35 +7,80 @@
 
 ## 🚀 快速开始
 
-### 方式一：Docker Compose（推荐，一条命令）
+### 方式一：Docker（推荐）
 
-镜像由 GitHub Actions 自动构建，服务器上不用编译。把结尾的 `EO_NETWORK` 换成这台机器
-所在的运营商（`lt`=联通 / `dx`=电信 / `yd`=移动）后整行执行：
+镜像由 GitHub Actions 构建好，服务器上**不需要编译**。两步。
 
-```bash
-sudo bash -c 'set -e; mkdir -p /opt/eo; cd /opt/eo; [ -d .git ] || git clone --depth 1 https://gitee.com/peroe/eo.git .; [ -f .env ] || printf "EO_NETWORK=lt\nEO_WEB_PORT=8787\nEO_IMAGE=ghcr.io/julugo/eo:latest\n" > .env; IMG=$(sed -n "s/^EO_IMAGE=//p" .env | tail -1); IMG=${IMG:-edge-optimizer:latest}; docker compose pull >/dev/null 2>&1 || { echo "== GHCR 拉不到，改为本机构建（约 2~5 分钟）=="; docker build -t "$IMG" .; }; docker compose up -d --no-build; sleep 6; docker compose logs --tail=40 | grep -E "监听地址|访问令牌"'
-```
-
-它会：拉代码 → 写 `.env` → 优先拉现成镜像（拉不到就本机构建）→ 启动 → 打印访问地址与令牌。
-之后所有操作都用 compose：
+**第 1 步：拿到镜像**（三选一，能通 GitHub 就用第一种）
 
 ```bash
-cd /opt/eo
-docker compose ps                 # 状态
-docker compose logs -f            # 实时日志（访问令牌也在里面）
-docker compose restart            # 重启
-docker compose down               # 优雅停止（收到 SIGTERM，退出码 0）
-docker compose up -d              # 只改了 .env 后应用
-./rebuild.sh                      # 改了代码/要重建镜像时用这个（见下方说明）
+# ① 能连 ghcr.io：直接拉
+docker pull ghcr.io/juluogo/eo:latest
+
+# ② 拉不动 ghcr.io：下离线包（GitHub 文件走国内代理，55MB）
+curl -fL https://gh-proxy.com/https://github.com/JuLuogo/eo/releases/download/image-latest/eo-image.tar.gz \
+  | gunzip | docker load
+
+# ③ 已经有 tar 文件：gunzip -c eo-image.tar.gz | docker load
 ```
 
-> ⚠️ **不要用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
-> 而 Debian / Ubuntu 源里的 `docker.io` 自带的多是 0.13，会直接报
-> `compose build requires buildx 0.17.0 or later`。
-> 仓库里的 `./rebuild.sh` 用经典 `docker build` + `up -d --no-build` 绕开这个问题。
+②③ 加载完同样得到 `ghcr.io/juluogo/eo:latest`（还有一个短名 `edge-optimizer:latest`），
+所以下面的运行命令三种方式通用。
 
-> 三台机器分别设 `EO_NETWORK=lt/dx/yd` 和 `EO_WEB_PORT=8787/8788/8789`。
-> 想自动下发 DNS，把 `HUAWEI_AK` / `HUAWEI_SK` 加进 `/opt/eo/.env` 再 `docker compose up -d`。
+**第 2 步：运行**（下面的环境变量按你的情况改，注释里写了含义）
+
+```bash
+docker run -d --name edge-optimizer \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -e EO_NETWORK=lt \
+  -e EO_WEB_PORT=8787 \
+  -e EO_WEB_TOKEN=改成你自己的随机串 \
+  -e EO_RATE=100 \
+  -e EO_INTERVAL=300 \
+  -e EO_DNS_SYNC=none \
+  -e EO_CONFIRM_DNS=no \
+  -e HUAWEI_AK= \
+  -e HUAWEI_SK= \
+  -e TZ=Asia/Shanghai \
+  -v /opt/eo/config:/app/config \
+  -v /opt/eo/results:/app/results \
+  -v /opt/eo/targets:/app/targets \
+  ghcr.io/juluogo/eo:latest
+```
+
+| 变量 | 说明 |
+| --- | --- |
+| `EO_NETWORK` | **这台机器的运营商**：`lt`=联通 / `dx`=电信 / `yd`=移动 |
+| `-p 8787:8787` | 宿主机端口:容器端口，两边要一致。三台机器用 8787/8788/8789 |
+| `EO_WEB_TOKEN` | 网页访问令牌，自己定一个（留空会自动生成并打印在日志里） |
+| `EO_RATE` | 全平台合计 TCP 连接上限/秒（默认 100） |
+| `EO_INTERVAL` | 每轮间隔秒数（默认 300，网页上也能改） |
+| `EO_DNS_SYNC` | `none` 只优选 / `dry-run` 预览 / `push` 真下发（还要 `EO_CONFIRM_DNS=yes`） |
+| `HUAWEI_AK/SK` | 自动下发 DNS 才需要；不填也能做优选 |
+| `-v ...:/app/targets` | 网段目录。**空目录会自动补齐**，不用手动准备 |
+| `-p 127.0.0.1:8787:8787` | 只想本机访问就改成这样（再配 SSH 隧道），公网不可达 |
+
+然后：
+
+```bash
+docker logs -f edge-optimizer                 # 实时日志（访问地址与令牌都在里面）
+docker restart edge-optimizer                 # 重启（改环境变量后需要重建容器，见下）
+docker stop edge-optimizer                    # 优雅停止（SIGTERM，约 5 秒，退出码 0）
+docker rm -f edge-optimizer                   # 删除容器（挂载目录里的配置和结果不受影响）
+```
+
+改环境变量需要先删容器再 `docker run`（docker 不支持改已运行容器的环境变量）：
+
+```bash
+docker rm -f edge-optimizer   # 然后重新执行上面的 docker run
+```
+
+> 打开 `http://<服务器IP>:8787/?token=<你设的令牌>`。
+> 想用 compose 管理就 `docker compose up -d`（仓库里有 `docker-compose.yml`）。
+> ⚠️ 但**不要用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
+> Debian/Ubuntu 自带的常常只有 0.13，会直接报 `compose build requires buildx 0.17.0 or later`。
+> 本机要重建编译用 `./rebuild.sh`。
 
 ### 方式二：裸机 systemd（不用 Docker）
 

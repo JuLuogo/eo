@@ -15,7 +15,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # 形如 julugo/eo
+  IMAGE_NAME: ${{ github.repository }}   # 形如 JuLuogo/eo，镜像名会转小写：juluogo/eo
 
 jobs:
   build:

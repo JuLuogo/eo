@@ -39,7 +39,7 @@ services:
         APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
         # INSTALL_DNS_SDK: "0"     # 纯优选（不装华为云 SDK），构建更快
     # 镜像名：默认本地构建产物；用 GHCR 现成镜像时设为
-    #   EO_IMAGE=ghcr.io/julugo/eo:latest
+    #   EO_IMAGE=ghcr.io/juluogo/eo:latest
     image: ${EO_IMAGE:-edge-optimizer:latest}
     container_name: edge-optimizer
     restart: unless-stopped

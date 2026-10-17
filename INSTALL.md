@@ -29,75 +29,71 @@ curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/install.sh | sudo s
 
 ## 一、一键安装（推荐）
 
-### 1.1 Docker Compose（推荐，一条命令）
+### 1.1 Docker（推荐）
 
-镜像由 GitHub Actions 自动构建，服务器上不用编译。**把 `EO_NETWORK=lt` 换成这台机器
-的运营商**（`lt`=联通 / `dx`=电信 / `yd`=移动），整行执行：
+镜像由 GitHub Actions 构建好，服务器上**不需要编译**。两步。
 
-```bash
-sudo bash -c 'set -e; mkdir -p /opt/eo; cd /opt/eo; [ -d .git ] || git clone --depth 1 https://gitee.com/peroe/eo.git .; [ -f .env ] || printf "EO_NETWORK=lt\nEO_WEB_PORT=8787\nEO_IMAGE=ghcr.io/julugo/eo:latest\n" > .env; IMG=$(sed -n "s/^EO_IMAGE=//p" .env | tail -1); IMG=${IMG:-edge-optimizer:latest}; docker compose pull >/dev/null 2>&1 || { echo "== GHCR 拉不到，改为本机构建（约 2~5 分钟）=="; docker build -t "$IMG" .; }; docker compose up -d --no-build; sleep 6; docker compose logs --tail=40 | grep -E "监听地址|访问令牌"'
-```
-
-这一行做的事：
-
-1. 拉代码到 `/opt/eo`（已存在则复用，不覆盖你的 `.env`）；
-2. 写 `.env`：运营商、端口、镜像地址 —— 端口的默认值是 lt=8787 / dx=8788 / yd=8789；
-3. `docker compose pull` 优先拉 GHCR 上构建好的镜像；**拉不到就自动退回本机构建**
-   （用经典 `docker build`，不依赖 buildx；apt/pip 源已默认国内镜像）；
-4. 启动容器，并把日志里的访问地址与令牌打出来。
-
-> 这条命令在本机 WSL（Debian 自带 Docker 26.1.5 + Compose 5.6.0，buildx 仅 0.13）
-> 实测通过：GHCR 拉取失败 → 自动本机构建 → 容器起来 → 网页 200 → 真实扫描启动，
-> 全程 27 秒（不含首次构建时间）。
-
-之后常用操作：
+**第 1 步：拿到镜像**（三选一，能通 `ghcr.io` 就用第一种）
 
 ```bash
-cd /opt/eo
-docker compose ps                 # 状态（含健康检查）
-docker compose logs -f            # 实时日志（访问令牌也在启动日志里）
-docker compose restart            # 重启
-docker compose down               # 优雅停止（SIGTERM，退出码 0，约 5 秒）
-docker compose up -d              # 只改了 .env 后应用
-./rebuild.sh                      # 改了代码/要重建镜像时用这个
+# ① 直接拉（服务器能连 ghcr.io 时最快）
+docker pull ghcr.io/juluogo/eo:latest
+
+# ② 拉不动 ghcr.io：下离线镜像包（走国内 GitHub 文件代理，55MB，实测 2~27s）
+curl -fL https://gh-proxy.com/https://github.com/JuLuogo/eo/releases/download/image-latest/eo-image.tar.gz \
+  | gunzip | docker load
+
+# ③ 已经有 tar 文件在本地
+gunzip -c eo-image.tar.gz | docker load
 ```
 
-> ⚠️ **别用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
-> 而 Debian / Ubuntu 源里的 `docker.io` 自带的多是 0.13，会直接失败：
-> `compose build requires buildx 0.17.0 or later`。
-> `./rebuild.sh` 用经典 `docker build` + `up -d --no-build`，任何 Docker 版本都能用。
+②③ 加载完得到的镜像名与 ① 完全一样：`ghcr.io/juluogo/eo:latest`
+（另外还带一个短名 `edge-optimizer:latest`）。**镜像内容同源，下面的运行命令通用。**
 
-**要自动下发 DNS**，把密钥写进 `/opt/eo/.env` 再 `docker compose up -d`：
+> 离线包由工作流在每次推送到 main 时自动更新，地址固定：
+> `https://github.com/JuLuogo/eo/releases/download/image-latest/eo-image.tar.gz`
+> 首个请求可能较慢（代理回源取 GitHub），之后有缓存会很快。
+
+**第 2 步：运行**（环境变量按你的情况改）
 
 ```bash
-cd /opt/eo
-cat >> .env <<'EOF'
-HUAWEI_AK=你的AccessKeyId
-HUAWEI_SK=你的AccessKeySecret
-EO_DNS_SYNC=dry-run
-EOF
-chmod 600 .env
-docker compose up -d
+docker run -d --name edge-optimizer \
+  --restart unless-stopped \
+  -p 8787:8787 \
+  -e EO_NETWORK=lt \
+  -e EO_WEB_PORT=8787 \
+  -e EO_WEB_TOKEN=改成你自己的随机串 \
+  -e EO_RATE=100 \
+  -e EO_INTERVAL=300 \
+  -e EO_DNS_SYNC=none \
+  -e EO_CONFIRM_DNS=no \
+  -e HUAWEI_AK= \
+  -e HUAWEI_SK= \
+  -e TZ=Asia/Shanghai \
+  -v /opt/eo/config:/app/config \
+  -v /opt/eo/results:/app/results \
+  -v /opt/eo/targets:/app/targets \
+  ghcr.io/juluogo/eo:latest
 ```
 
-> 先用 `dry-run`（只预览不下发）确认记录名和网段没问题，再改成 `push`。
-> 详见 [十一、安全与隐患清单](#十一安全与隐患清单)。
+| 变量 | 说明 |
+| --- | --- |
+| `EO_NETWORK` | **这台机器的运营商**：`lt`=联通 / `dx`=电信 / `yd`=移动（决定 `-lt/-dx/-yd` 三套平台与 DNS 记录） |
+| `-p 8787:8787` | 宿主机端口:容器端口，两边必须一致。三台机器分别用 8787 / 8788 / 8789 |
+| `EO_WEB_TOKEN` | 网页访问令牌，自己定；留空会自动生成并打印在日志里 |
+| `EO_RATE` | 全平台合计 TCP 连接上限/秒（默认 100）；`0`=不限速 |
+| `EO_INTERVAL` | 每轮间隔秒数（默认 300，网页上也能随时改，下一轮生效） |
+| `EO_WINDOW` | 时间窗口，如 `00:00-07:00`；留空=全天 |
+| `EO_DNS_SYNC` | `none` 只优选 / `dry-run` 只预览 / `push` 真下发（还需 `EO_CONFIRM_DNS=yes`） |
+| `HUAWEI_AK` / `HUAWEI_SK` | 自动下发 DNS 才需要；不填也能正常优选 |
+| `-v .../targets` | 网段目录，**空目录会自动从镜像内置补齐**，不用手动准备 |
+| `-p 127.0.0.1:8787:8787` | 只想本机访问就改成这样（再配 SSH 隧道），公网不可达 |
 
-**三台机器**：分别在 `.env` 里设 `EO_NETWORK=lt/dx/yd` 与 `EO_WEB_PORT=8787/8788/8789`。
+启动后日志里会有访问地址与令牌：
 
-**网段文件**：`./targets` 是挂载目录。如果是空的（比如你只下载了 compose 文件、
-没 clone 仓库），容器启动时会自动从镜像内置的种子补齐 `eo.txt` / `esa.txt` / `cft.txt`，
-**已有文件不会被覆盖**；想关掉就设 `EO_SEED_TARGETS=0`。
-
-> **想用 GitHub 上预构建好的镜像但拉不动**：GHCR 在境内连通性差，且普通
-> registry 加速代理不了 ghcr.io。三条路 ——
-> A) 去掉 `EO_IMAGE` 那行，让 compose 本机构建（最稳）；
-> B) 包为私有时先 `echo <GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin`
->    （令牌需勾选 `read:packages`）；
-> C) 把镜像推到国内仓库后把 `EO_IMAGE` 改成那个地址。
-
-
-执行完日志里会有（`docker compose logs | grep -E "监听地址|访问令牌"`）：
+```bash
+docker logs -f edge-optimizer
+```
 
 ```
   ==========================================================
@@ -108,15 +104,45 @@ docker compose up -d
     带令牌访问 : http://<服务器IP>:8787/?token=xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-> 另一种更"傻瓜"的交互式脚本（会问你运营商和端口、自动识别本机运营商）：
+常用操作：
+
+```bash
+docker logs -f edge-optimizer       # 实时日志
+docker stop edge-optimizer          # 优雅停止（SIGTERM，约 5 秒，退出码 0）
+docker restart edge-optimizer       # 重启
+docker rm -f edge-optimizer         # 删除容器（挂载目录里的数据不受影响）
+```
+
+**改环境变量**必须先删容器再 `docker run`（Docker 不支持修改已运行容器的环境变量）：
+
+```bash
+docker rm -f edge-optimizer && docker run -d ...   # 重新执行上面的 docker run
+```
+
+**自动下发 DNS**：把 `HUAWEI_AK` / `HUAWEI_SK` 填进 `docker run` 的 `-e`，
+先设 `EO_DNS_SYNC=dry-run` 验证记录名与网段，确认无误后再改 `push` +
+`EO_CONFIRM_DNS=yes`。详见 [十一、安全与隐患清单](#十一安全与隐患清单)。
+
+**想用 Compose 管理**：仓库里有 `docker-compose.yml`，`cd` 进去 `docker compose up -d` 即可，
+配置写在同目录 `.env` 里。注意：
+
+> ⚠️ **别用 `docker compose up -d --build`**：Compose 的 build 要求 buildx ≥ 0.17，
+> 而 Debian / Ubuntu 源里的 `docker.io` 自带的多是 0.13，会直接失败：
+> `compose build requires buildx 0.17.0 or later`。
+> 需要在服务器上编译时用 `./rebuild.sh`（经典 `docker build` + `up -d --no-build`）。
+
+> 另一种交互式脚本（会自动识别本机运营商、问你端口、生成 `.env`）：
 >
 > ```bash
 > DIR=/opt/eo EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
 > bash -c "$(curl -fsSL https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
 > ```
 >
-> 它同样支持 `USE_GHCR=1 IMAGE=ghcr.io/julugo/eo:latest` 走预构建镜像。
+> 支持 `USE_GHCR=1 IMAGE=ghcr.io/juluogo/eo:latest` 走预构建镜像。
 > 不过 `onekey.sh` 从 GitHub raw 拉取，境内可能要先过一层文件代理。
+
+**网段文件**：`targets/` 是挂载目录。空的也没关系 —— 容器启动时会从镜像内置的种子补齐
+`eo.txt` / `esa.txt` / `cft.txt`，**已有文件不会被覆盖**；想关掉就设 `EO_SEED_TARGETS=0`。
 
 ### 1.2 裸机安装（不用 Docker）
 
@@ -730,8 +756,16 @@ docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-sli
 ```
 
 > **关于 GHCR（ghcr.io）**：`ghcr.io` 在境内连通性差，而且它**不是** Docker Hub 镜像，
-> 普通 registry-mirrors **代理不了它**。若拉 `ghcr.io/julugo/eo:latest` 失败，建议：
-> ① 改本机构建（一条命令，见第六节）；② 或把镜像推到国内仓库（见 9.4）。
+> 普通 registry-mirrors **代理不了它**；各类「ghcr 镜像站」实测也已失效。
+> 镜像名是 `ghcr.io/juluogo/eo:latest`。拉不动就用**离线镜像包**（最省事）：
+>
+> ```bash
+> curl -fL https://gh-proxy.com/https://github.com/JuLuogo/eo/releases/download/image-latest/eo-image.tar.gz \
+>   | gunzip | docker load
+> ```
+>
+> 详见 [11.5](#115-镜像拉不下来怎么办ghcr-在国内的实际情况)。也可以改本机构建（第六节）
+> 或把镜像推到国内仓库（见 9.4）。
 
 ### 9.4 想彻底避开 GHCR：推到国内镜像仓库
 
@@ -740,15 +774,15 @@ docker build --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-sli
 ```bash
 # 1. 在阿里云「容器镜像服务」创建命名空间与仓库，得到形如
 #    registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo 的地址
-# 2. 在能访问 GitHub 的机器上拉取并转推
-docker pull ghcr.io/julugo/eo:latest
-docker tag  ghcr.io/julugo/eo:latest registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest
+# 2. 在能访问 GitHub 的机器上（或本地构建后）转推
+docker pull ghcr.io/juluogo/eo:latest      # 拉不动就 gunzip -c eo-image.tar.gz | docker load
+docker tag  ghcr.io/juluogo/eo:latest registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest
 docker login registry.cn-hangzhou.aliyuncs.com
 docker push registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest
 
 # 3. 服务器上直接用国内地址
 USE_GHCR=1 IMAGE=registry.cn-hangzhou.aliyuncs.com/<命名空间>/eo:latest \
-DIR=/opt/edge-optimizer EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
+DIR=/opt/eo EO_NETWORK=lt HUAWEI_AK=... HUAWEI_SK=... \
 bash -c "$(curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/JuLuogo/eo/main/onekey.sh)"
 ```
 
@@ -924,21 +958,39 @@ sudo grep -o '"web_token": "[^"]*"' config/config.json
 `.env` 已被 `.gitignore` 与 `.dockerignore` 排除，且 Dockerfile 只 COPY 指定文件，
 **不会被打进镜像**。网页接口回显密钥时一律打码（`/api/config` 只给 `web_token_set`）。
 
-### 11.5 GHCR 镜像是私有还是公开
+### 11.5 镜像拉不下来怎么办（GHCR 在国内的实际情况）
 
-GitHub 上「仓库公开」不等于「镜像包公开」——GHCR 的 Package 可见性是**单独设置**的。
-拉不动先按 11.5 的两条路走：
+镜像名是 **`ghcr.io/juluogo/eo:latest`**（GitHub 用户名 `JuLuogo` → 镜像名转小写）。
+注意是 `juluogo` 而不是 `julugo`，写错会报 `manifest unknown`。
+
+实测结论（2026-10，国内家庭宽带 + 海外代理）：
+
+| 通道 | 结果 |
+| --- | --- |
+| `ghcr.io` 匿名取 token | **403 DENIED**（连公开包 `cli/cli` 也一样，是 GitHub 侧的拒绝，不是墙） |
+| `ghcr.nju.edu.cn` / `ghcr.dockerproxy.net` / `ghcr.1ms.run` 等镜像站 | 对 `cli/cli` 都返回 `manifest unknown`，**已失效** |
+| GitHub Release 离线包（走 `gh-proxy.com`） | **55MB，2~27 秒下完** ✅ |
+
+所以最可靠的是**离线镜像包**：
 
 ```bash
-# 判断是私有还是网络问题
-docker pull ghcr.io/julugo/eo:latest
-
-# A) 包是私有的：登录后拉（令牌需勾选 read:packages）
-echo <GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin
-
-# B) 想匿名拉：到 GitHub → 你的头像 → Your packages → eo →
-#    Package settings → Danger Zone → Change visibility → Public
+curl -fL https://gh-proxy.com/https://github.com/JuLuogo/eo/releases/download/image-latest/eo-image.tar.gz \
+  | gunzip | docker load
 ```
+
+加载出来的镜像名和 `docker pull` 得到的一模一样（`ghcr.io/juluogo/eo:latest`），
+后续 `docker run` 不用改。这个包由工作流在每次推送 main 时自动重建覆盖，地址固定。
+
+**如果服务器能连 ghcr.io**，直接 `docker pull ghcr.io/juluogo/eo:latest` 更省事。
+包确实是公开的；若你后来改成私有，拉取前需要：
+
+```bash
+echo <GitHub令牌> | docker login ghcr.io -u JuLuogo --password-stdin   # 令牌勾选 read:packages
+```
+
+**实在都不行**（比如服务器完全连不上 GitHub）：在任一台能上网的机器上跑
+`docker build`，然后 `docker save | gzip` 传到服务器 `docker load`；
+或者在服务器上 `./rebuild.sh` 本机构建（apt/pip 源已默认国内镜像）。
 
 若 GHCR 在境内拉不动（普通 registry 镜像加速代理不了 ghcr.io），让本机构建：
 
@@ -964,7 +1016,7 @@ sudo ls -la /opt/eo/results/          # 正常现象，不是权限坏了
 sudo vi /opt/eo/targets/eo.txt        # 改网段要 sudo
 
 # 想让属主变成你自己（宿主机 UID 1000）：
-#   /opt/eo/.env 里设 EO_APP_UID=1000 / EO_APP_GID=1000，然后 docker compose up -d
+#   docker run 时加 -e EO_APP_UID=1000 -e EO_APP_GID=1000（compose 则写进 .env）
 ```
 
 ### 11.7 结果与历史的磁盘占用
