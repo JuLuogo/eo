@@ -38,6 +38,10 @@ IS_WINDOWS = platform.system().lower() == "windows"
 # 抽样是按网段直接生成代表 IP，不受此限制。
 MAX_EXPAND_HOSTS = 1_048_576
 
+# 深扫时最多处理多少个 /24（每个 254 个地址 -> 默认约 26 万个地址，占 20MB 左右）。
+# 上一轮结果里有几千个命中就是几千个 /24，不设限会累积到几百 MB。
+DEEP_MAX_NETWORKS = max(1, int(os.environ.get("EO_DEEP_MAX_NETWORKS", "1024") or 1024))
+
 
 # --------------------------------------------------------------------------
 # 并发上限：每个探测都会 fork 一个 curl 进程（常驻 6~10MB，含 TLS 上下文）。
@@ -852,42 +856,36 @@ class ScanOutcome:
         )
 
 
-def sample_platform_targets(platform: Platform, targets: Sequence[str] | None = None,
-                            log: Callable[[str], None] | None = None) -> list[str] | None:
-    """按平台的 sample_per_24 / deep_scan 设置，把网段整理成待扫 IP 列表。"""
-    from .core import load_targets as _load  # 兼容热重载
+def _expand_networks_capped(networks: Sequence[str],
+                            log: Callable[[str], None] | None = None,
+                            platform_name: str = "") -> list[str]:
+    """把一组网段（通常是深扫命中的 /24）展开成 IP 列表，带**总量**上限。
 
-    sample = getattr(platform, "sample_per_24", 0) or 0
-    deep = bool(getattr(platform, "deep_scan", False))
-    if not sample and not deep:
-        return list(targets) if targets is not None else None
-
-    source = list(targets) if targets is not None else None
-    if source is None:
-        path = Path(platform.targets_file)
-        source = _load(path)
-
-    if deep and platform.output_file and Path(platform.output_file).exists():
-        # 深扫：以上一轮命中的 /24 为范围，做全量（不再抽样）
-        seeds = [line.split("\t")[0].strip()
-                 for line in Path(platform.output_file).read_text(encoding="utf-8").splitlines()
-                 if line.strip()]
-        networks = parent_24s(seeds)
-        if networks:
-            if log:
-                log(f"[{platform.name}] 深扫模式：以上一轮命中 IP 所在的 {len(networks)} 个 /24 为范围")
-            from .core import load_targets as _load_net
-
-            expanded: list[str] = []
-            for network in networks:
-                expanded.extend(expand_targets(network))
-            return expanded
-
-    if sample:
+    为什么需要：expand_targets 只管单个网段的大小，而这里是很多个网段拼起来 ——
+    上一轮结果里有 N 个 IP 就是 N 个 /24，每个 254 个地址。N=5000 时是 127 万个
+    地址（约 90MB），N=20000 时就是 500 万个（约 400MB），小机器直接 OOM。
+    所以这里两层限制：
+      1. 最多处理 EO_DEEP_MAX_NETWORKS 个网段（默认 1024，够覆盖 26 万个地址）；
+      2. 展开总数硬封顶 MAX_EXPAND_HOSTS。
+    """
+    limit_networks = DEEP_MAX_NETWORKS
+    picked = list(networks)
+    if len(picked) > limit_networks:
         if log:
-            log(f"[{platform.name}] 抽样模式：每 /24 取 {sample} 个代表 IP（粗扫）")
-        return sample_targets(source, sample)
-    return source
+            log(f"  深扫范围过大：命中 {len(picked)} 个 /24，只取前 {limit_networks} 个"
+                f"（结果按延迟排序，前面的更优；可用 EO_DEEP_MAX_NETWORKS 调整）")
+        picked = picked[:limit_networks]
+
+    expanded: list[str] = []
+    for network in picked:
+        got = expand_targets(network)
+        room = MAX_EXPAND_HOSTS - len(expanded)
+        if room <= 0:
+            if log:
+                log(f"  深扫地址数已达上限 {MAX_EXPAND_HOSTS}，后面的网段不再展开")
+            break
+        expanded.extend(got[:room])
+    return expanded
 
 
 def sample_platform_targets(platform: Platform, targets: Sequence[str] | None = None,
@@ -919,11 +917,8 @@ def sample_platform_targets(platform: Platform, targets: Sequence[str] | None = 
             if networks:
                 if log:
                     log(f"[{platform.name}] 深扫模式：以上一轮命中 IP 所在的 {len(networks)} 个 /24 "
-                        f"为范围（共约 {len(networks) * 254} 个地址）")
-                expanded: list[str] = []
-                for network in networks:
-                    expanded.extend(expand_targets(network))
-                return expanded
+                        f"为范围（最多约 {len(networks) * 254} 个地址）")
+                return _expand_networks_capped(networks, log=log, platform_name=platform.name)
         elif log:
             log(f"[{platform.name}] 还没有上一轮结果，深扫先退化为抽样")
 

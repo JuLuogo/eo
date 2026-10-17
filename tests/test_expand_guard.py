@@ -115,6 +115,61 @@ check("run.py selftest 退出码 0", proc.returncode == 0,
 check("自检跑得很快（<20s）", dt < 20, f"{dt:.1f}s")
 
 print()
+print("7) 深扫总量上限：命中很多 /24 时不能无限累积")
+from eo.core import (DEEP_MAX_NETWORKS as DNET, _expand_networks_capped,   # noqa: E402
+                     parent_24s, sample_network)
+import ipaddress                                                          # noqa: E402
+
+nets = [f"10.{i // 256}.{i % 256}.0/24" for i in range(5000)]
+logs: list[str] = []
+before = rss_mb()
+t0 = time.perf_counter()
+got = _expand_networks_capped(nets, log=logs.append, platform_name="Test")
+dt = time.perf_counter() - t0
+grow = rss_mb() - before
+check("网段数被截断到 DEEP_MAX_NETWORKS",
+      len(got) == DNET * 254, f"{len(got)} 个地址（{DNET} 个 /24 × 254）")
+check("总量不超过 MAX_EXPAND_HOSTS", len(got) <= MAX_EXPAND_HOSTS, f"{len(got)}")
+check("内存增长可控（<120MB）", grow < 120, f"+{grow:.1f}MB  {dt:.2f}s")
+check("日志说明了截断", any("深扫范围过大" in line for line in logs),
+      str([l for l in logs if "深扫" in l][:1]))
+check("截断后取的是前 N 个（结果按延迟排序，前面的更优）",
+      got[:1] == [str(ipaddress.ip_address(int(ipaddress.ip_network(nets[0]).network_address) + 1))],
+      f"{got[:1]}")
+
+small = _expand_networks_capped(nets[:3], log=None, platform_name="Test")
+check("网段数在上限内时全量展开", len(small) == 3 * 254, f"{len(small)}")
+
+print()
+print("8) parent_24s 不会因为大量命中而失控")
+seeds = [f"10.{i // 256}.{i % 256}.{j}" for i in range(2000) for j in (1, 5)]
+t0 = time.perf_counter()
+ns = parent_24s(seeds)
+check("4000 个 IP 归并成 2000 个 /24", len(ns) == 2000, f"{len(ns)}  {time.perf_counter()-t0:.2f}s")
+
+print()
+print("9) sample_network 在大网段上有界（按 /24 取代表，不物化全部）")
+t0 = time.perf_counter()
+picks = sample_network(ipaddress.ip_network("10.0.0.0/8"), 4)
+dt = time.perf_counter() - t0
+check("65536 个 /24 × 4 = 262144 个代表地址", len(picks) == 262144, f"{len(picks)}  {dt:.2f}s")
+check("抽样结果数量由 per_24 决定，与网段总大小无关", len(picks) == 65536 * 4, str(len(picks)))
+
+print()
+print("10) 全模块顶层定义不得重复（重复定义会静默覆盖，改动白做）")
+import ast                                                                # noqa: E402
+
+dup_found: list[str] = []
+for py in sorted((ROOT / "eo").glob("*.py")):
+    tree = ast.parse(py.read_text(encoding="utf-8"))
+    names = [n.name for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    dups = {n for n in names if names.count(n) > 1}
+    if dups:
+        dup_found.append(f"{py.name}: {sorted(dups)}")
+check("eo/*.py 没有重复的顶层函数/类", not dup_found, "; ".join(dup_found) or "干净")
+
+print()
 print("=" * 70)
 if _failures:
     print(f"超大网段保护测试：失败 {len(_failures)} 项")
