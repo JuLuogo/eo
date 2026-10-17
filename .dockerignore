@@ -26,3 +26,5 @@ eo.txt
 targets/_*
 docker-compose.yml
 _edge-optimizer.tar.gz
+# Komari 节点探针（约 20MB 的静态二进制，与优选镜像无关）
+probe/

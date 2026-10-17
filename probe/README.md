@@ -1,4 +1,4 @@
-﻿# Komari 节点探针（komari-node-probe）
+# Komari 节点探针（komari-node-probe）
 
 给 Komari 的 node-collector 插件喂数据的轻量探针：采集 **CPU 温度** 与
 **IPv4/IPv6 分地址族的 TCP/UDP 连接数**（Komari 协议里没有这两项）。
