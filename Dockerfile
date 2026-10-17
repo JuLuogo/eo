@@ -64,7 +64,7 @@ WORKDIR /app
 # 注意：千万不要把 eo.py 之类的同名文件放进镜像根目录 —— 它会遮蔽 eo/ 包，
 # 导致 "No module named 'eo.core'; 'eo' is not a package"
 COPY eo/ ./eo/
-COPY run.py updatedns.py README.md INSTALL.md docker-entrypoint.sh ./
+COPY run.py updatedns.py README.md INSTALL.md docker-entrypoint.sh healthcheck.sh ./
 
 # 自检：确认 eo 是包（而不是被同名文件遮蔽），构建阶段就拦住这类问题
 RUN python -c "import eo, pathlib; p = pathlib.Path(eo.__file__); \
@@ -76,7 +76,7 @@ COPY targets/ ./targets/
 # 再存一份种子：宿主机 ./targets 挂载为空时由入口脚本补进去，
 # 否则空挂载会把镜像自带的网段文件整个盖掉，部署完第一轮就失败。
 COPY targets/ /opt/eo-seed-targets/
-RUN mkdir -p results/history config && chmod +x docker-entrypoint.sh
+RUN mkdir -p results/history config && chmod +x docker-entrypoint.sh healthcheck.sh
 
 # 以非 root 运行，降低容器逃逸面。
 # 注意：这里【故意不写 USER optimizer】—— 入口脚本需要先以 root 修正挂载目录归属，
@@ -105,8 +105,12 @@ STOPSIGNAL SIGTERM
 # 入口脚本把环境变量翻译成命令行参数（见 INSTALL.md）
 ENTRYPOINT ["./docker-entrypoint.sh"]
 
-HEALTHCHECK --interval=2m --timeout=30s --start-period=40s \
-    CMD python run.py selftest > /dev/null 2>&1 || exit 1
+# 健康检查只发一个 HTTP 请求，不再起 Python。
+# 老写法 `CMD python run.py selftest` 每 2 分钟起一个完整解释器并 import 整个
+# eo 包 —— 在 1~2 核的小机器上是明显的 CPU/内存尖峰，而且自检里一旦有重活
+# 就会把容器 OOM 掉（曾经真的发生过：自检测超大网段时展开 1677 万个地址）。
+HEALTHCHECK --interval=2m --timeout=15s --start-period=20s --retries=3 \
+    CMD ["sh", "/app/healthcheck.sh"]
 
 LABEL org.opencontainers.image.title="edge-optimizer" \
       org.opencontainers.image.description="多平台边缘节点优选（EdgeOne / ESA / CloudFront，按运营商分 lt/dx/yd）" \

@@ -189,9 +189,16 @@ def expand_targets(line: str) -> list[str]:
     if net.num_addresses == 1:
         return [str(net.network_address)]
 
+    # 必须先按数量判断再展开：net.hosts() 是生成器，但 list() 会一次性
+    # 把全部地址变成字符串。10.0.0.0/8 有 1677 万个地址，展开一次就要
+    # 1.5~2GB 内存 —— 之前把上限判断写在 list() 之后，等于没保护，
+    # 于是「自检里测超大网段」直接把容器 OOM 掉（健康检查每 2 分钟触发一次）。
+    size = net.num_addresses
+    host_count = size - 2 if size > 2 else size
+    if host_count > MAX_EXPAND_HOSTS:
+        raise ValueError(f"网段过大（{host_count} 个地址，上限 {MAX_EXPAND_HOSTS}）: {text}")
+
     hosts = [str(ip) for ip in net.hosts()]
-    if len(hosts) > MAX_EXPAND_HOSTS:
-        raise ValueError(f"网段过大（{len(hosts)} 个地址）: {text}")
     return hosts
 
 

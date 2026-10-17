@@ -31,6 +31,7 @@ SUITES = {
     "resources": "并发自适应：按可用内存/核数限制探测进程数（防小内存机器卡死）",
     "probe": "探测实现：进程内 socket+ssl 与 curl 行为一致（状态码/超时/TLS/对端 IP）",
     "filter": "结果筛选：延迟门槛 / 只取最快 N 个 / 稳定性排序",
+    "expand_guard": "超大网段保护：必须先判数量再展开（否则 /8 直接 OOM）",
 }
 
 # 需要 Docker 的套件不放进 run_all（它单独跑）：

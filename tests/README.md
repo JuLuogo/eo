@@ -46,6 +46,7 @@ pip install pytest && pytest tests/ -v
 | `test_resources.py` | 按可用内存/核数计算并发上限、`EO_MAX_CONCURRENT` 覆盖、按平台数摊分、接线到 `scan_platforms`（平台对象不被就地修改） | **小内存机器不能被自己的并发压垮** |
 | `test_probe.py` | 进程内探测 vs curl：200/404/拒连/超时/自签证书/非 HTTP 响应/`EO_PROBE` 分发/50 线程并发 | **换掉 curl 子进程后行为不能漂移** |
 | `test_filter.py` | 延迟门槛丢节点、只保留最快 N 个、门槛+前N 组合、同延迟时重试过的排后面、`--max-ms`/`--top`/环境变量 | **只留下又快又稳的节点** |
+| `test_expand_guard.py` | `/8` 必须 0.5 秒内抛错且不吃内存、`/12` 放行、`/11` 拒绝、区间同样先判后展开、`load_targets` 同样安全、`selftest` 能在限内存下跑完 | **超大网段不能把容器 OOM 掉** |
 
 ## Docker 集成测试
 
