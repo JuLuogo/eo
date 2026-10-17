@@ -34,7 +34,8 @@ print()
 print("1) max_concurrent_probes：显式上限与边界")
 # --------------------------------------------------------------------------
 check("显式 limit 生效", core.max_concurrent_probes(32) == 32, str(core.max_concurrent_probes(32)))
-check("太小被抬到 2（至少能跑）", core.max_concurrent_probes(0) == 2, str(core.max_concurrent_probes(0)))
+check("允许低到 1（完全串行）", core.max_concurrent_probes(1) == 1, str(core.max_concurrent_probes(1)))
+check("0 或负数被抬到 1", core.max_concurrent_probes(0) == 1, str(core.max_concurrent_probes(0)))
 check("太大被夹到 512", core.max_concurrent_probes(99999) == 512, str(core.max_concurrent_probes(99999)))
 
 print()
@@ -62,9 +63,12 @@ check("串行跑（不并行平台）时单平台可吃满上限",
 check("原本就低于上限时不上调",
       core.plan_workers(4, 3, parallel=True, limit=30) == 4,
       str(core.plan_workers(4, 3, parallel=True, limit=30)))
-check("平台特别多时每平台保底 2 个（不至于单线程）",
-      core.plan_workers(80, 40, parallel=True, limit=10) == 2,
+check("平台特别多时每平台保底 1 个（允许串行）",
+      core.plan_workers(80, 40, parallel=True, limit=10) == 1,
       str(core.plan_workers(80, 40, parallel=True, limit=10)))
+check("显式要 1 个并发就是 1",
+      core.plan_workers(80, 1, parallel=False, limit=1) == 1,
+      str(core.plan_workers(80, 1, parallel=False, limit=1)))
 
 print()
 print("4) 按本机规格推算的值是否合理")
@@ -126,6 +130,36 @@ finally:
     core.scan_platform = original                        # type: ignore[assignment]
     os.environ.pop("EO_MAX_CONCURRENT", None)
 check("单平台保留 9 个并发", captured == [("only", 9)], str(captured))
+
+print()
+print("7) 总并发小于平台数时，平台之间自动串行")
+# --------------------------------------------------------------------------
+captured.clear()
+logs: list[str] = []
+
+
+def fake_serial(platform, **kwargs):                     # noqa: ANN001, ANN003
+    captured.append((platform.key, platform.workers))
+    return core.ScanOutcome(platform, 0, [], 0, 0.0, "")
+
+
+core.scan_platform = fake_serial                         # type: ignore[assignment]
+try:
+    os.environ["EO_MAX_CONCURRENT"] = "2"
+    three = [core.Platform(key=f"s{i}", name=f"S{i}", host="example.com",
+                           workers=80, enabled=True)
+             for i in range(3)]
+    core.scan_platforms(three, targets=["192.0.2.1"], log=logs.append)
+finally:
+    core.scan_platform = original                        # type: ignore[assignment]
+    os.environ.pop("EO_MAX_CONCURRENT", None)
+
+check("3 个平台 / 上限 2 -> 每平台 2 个（靠串行保证总数不超）",
+      sorted(captured) == [("s0", 2), ("s1", 2), ("s2", 2)], str(sorted(captured)))
+check("三个平台都真的跑了",
+      sorted(k for k, _ in captured) == ["s0", "s1", "s2"], str(sorted(captured)))
+check("日志说明了改成串行",
+      any("串行" in line for line in logs), str(logs[:3]))
 
 print()
 print("=" * 70)

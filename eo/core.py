@@ -80,15 +80,18 @@ def max_concurrent_probes(limit: int | None = None) -> int:
       3. 按可用内存推算：只用 60% 的可用内存，其余留给解释器与文件缓存；
       4. 再按 CPU 核数收一次（每核 8 个进程），避免小机器被上下文切换拖死。
 
+    显式指定时允许低到 1（= 完全串行，一个探测跑完再跑下一个）；
+    自动推算时不会低于 4，因为那说明机器信息读不到或极小。
+
     拿不到内存信息（如 Windows）时只按核数算。
     """
     if limit is not None:
-        return max(2, min(int(limit), MAX_CONCURRENT_CAP))
+        return max(1, min(int(limit), MAX_CONCURRENT_CAP))
 
     raw = (os.environ.get("EO_MAX_CONCURRENT") or "").strip()
     if raw:
         try:
-            return max(2, min(int(float(raw)), MAX_CONCURRENT_CAP))
+            return max(1, min(int(float(raw)), MAX_CONCURRENT_CAP))
         except ValueError:
             pass
 
@@ -108,8 +111,8 @@ def plan_workers(workers_per_platform: int, platform_count: int, *,
     total_limit = max_concurrent_probes(limit)
     share = platform_count if parallel and platform_count > 1 else 1
     per = total_limit // max(1, share)
-    # 至少留 2 个，否则单线程探测会慢到不可用
-    return max(2, min(int(workers_per_platform), per))
+    # 允许低到 1（= 串行，一个跑完再跑下一个）；显式要求时才可能这么低
+    return max(1, min(int(workers_per_platform), per))
 
 # 关闭 Windows 下 curl 弹出的控制台窗口
 _CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
@@ -1000,6 +1003,13 @@ def scan_platforms(
 
     # ---- 按可用内存/核数压并发（见 max_concurrent_probes 的说明）----
     parallel = bool(parallel_platforms) and len(plats) > 1
+    # 想跑得比平台数还少（例如 EO_MAX_CONCURRENT=2 却有三个平台）时，
+    # 改成平台之间串行 —— 否则每个平台至少 1 个 worker，总数必然超限。
+    limit = max_concurrent_probes()
+    if parallel and limit < len(plats):
+        parallel = False
+        log(f"并发上限只有 {limit}，小于平台数 {len(plats)}，改为逐个平台串行扫描")
+
     before = sum(int(p.workers or 0) for p in plats)
     capped = [replace(p, workers=plan_workers(int(p.workers or 0), len(plats),
                                               parallel=parallel))
@@ -1010,14 +1020,17 @@ def scan_platforms(
         avail = available_memory_mb()
         mem_note = f"可用内存约 {avail:.0f}MB、" if avail else ""
         per = max(int(p.workers or 0) for p in plats)
-        log(f"⚠ 并发已按机器规格下调：{before} -> {after} 个并发探测"
-            f"（每平台最多 {per} 个；{mem_note}{os.cpu_count() or 4} 核）。"
+        # 串行时同时在飞的只有单个平台的数量，别把各平台相加算成并发
+        effective = per if not parallel else after
+        mode = "各平台并行" if parallel else "平台间串行"
+        log(f"⚠ 并发已按机器规格下调：{before} -> {effective} 个并发探测"
+            f"（{mode}，每平台最多 {per} 个；{mem_note}{os.cpu_count() or 4} 核）。"
             f"想手动指定：EO_MAX_CONCURRENT=<总进程数>")
 
     kwargs = dict(targets=targets, log=log, quiet=quiet, limiter=limiter,
                   stop_event=stop_event, on_result=on_result, on_plan=on_plan)
 
-    if not parallel_platforms or len(plats) == 1:
+    if not parallel or len(plats) == 1:
         return [scan_platform(p, **kwargs) for p in plats]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(plats)) as pool:
