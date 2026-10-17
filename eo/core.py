@@ -22,7 +22,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -35,6 +35,81 @@ IS_WINDOWS = platform.system().lower() == "windows"
 # 注意：这个上限只管「全量展开」路径；大网段请用 --sample-per-24 抽样，
 # 抽样是按网段直接生成代表 IP，不受此限制。
 MAX_EXPAND_HOSTS = 1_048_576
+
+
+# --------------------------------------------------------------------------
+# 并发上限：每个探测都会 fork 一个 curl 进程（常驻 6~10MB，含 TLS 上下文）。
+# 默认 workers=80 × 3 个平台并行 = 240 个并发进程 ≈ 2GB 内存 —— 在 1.8GB 的
+# 小机器上会把内存和 swap 打满、负载飙到几十，机器直接卡死（实测过）。
+#
+# 所以真正开工前按「可用内存 + CPU 核数」压一次总并发，并把实际生效值写进日志。
+# 想自己定就设 EO_MAX_CONCURRENT（总进程数上限）。
+# --------------------------------------------------------------------------
+PER_PROBE_MB = 12.0            # 单个 curl 进程的保守估计
+MAX_CONCURRENT_CAP = 512       # 硬上限，防止在超大机器上开出离谱的并发
+
+
+def _meminfo_mb(key: str) -> float | None:
+    """读 /proc/meminfo 里的某个值（单位 MB）。非 Linux 或读不到返回 None。"""
+    try:
+        with open("/proc/meminfo", encoding="ascii", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith(key):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return float(parts[1]) / 1024.0
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def available_memory_mb() -> float | None:
+    """尽可能准确地估算「还能用多少内存」。"""
+    avail = _meminfo_mb("MemAvailable:")
+    if avail is not None:
+        return avail
+    return _meminfo_mb("MemFree:")
+
+
+def max_concurrent_probes(limit: int | None = None) -> int:
+    """允许同时存在的探测进程数上限。
+
+    取值顺序：
+      1. 显式传入 limit（测试用）；
+      2. 环境变量 EO_MAX_CONCURRENT；
+      3. 按可用内存推算：只用 60% 的可用内存，其余留给解释器与文件缓存；
+      4. 再按 CPU 核数收一次（每核 8 个进程），避免小机器被上下文切换拖死。
+
+    拿不到内存信息（如 Windows）时只按核数算。
+    """
+    if limit is not None:
+        return max(2, min(int(limit), MAX_CONCURRENT_CAP))
+
+    raw = (os.environ.get("EO_MAX_CONCURRENT") or "").strip()
+    if raw:
+        try:
+            return max(2, min(int(float(raw)), MAX_CONCURRENT_CAP))
+        except ValueError:
+            pass
+
+    cores = os.cpu_count() or 4
+    by_cpu = max(4, cores * 8)
+
+    avail = available_memory_mb()
+    if avail is None or avail <= 0:
+        return min(by_cpu, MAX_CONCURRENT_CAP)
+    by_mem = max(4, int(avail * 0.6 / PER_PROBE_MB))
+    return min(by_mem, by_cpu, MAX_CONCURRENT_CAP)
+
+
+def plan_workers(workers_per_platform: int, platform_count: int, *,
+                 parallel: bool = True, limit: int | None = None) -> int:
+    """算出每个平台实际该用多少 worker（保证总并发不超上限）。"""
+    total_limit = max_concurrent_probes(limit)
+    share = platform_count if parallel and platform_count > 1 else 1
+    per = total_limit // max(1, share)
+    # 至少留 2 个，否则单线程探测会慢到不可用
+    return max(2, min(int(workers_per_platform), per))
 
 # 关闭 Windows 下 curl 弹出的控制台窗口
 _CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
@@ -922,6 +997,22 @@ def scan_platforms(
     plats = [p for p in platforms if p.enabled]
     if not plats:
         return []
+
+    # ---- 按可用内存/核数压并发（见 max_concurrent_probes 的说明）----
+    parallel = bool(parallel_platforms) and len(plats) > 1
+    before = sum(int(p.workers or 0) for p in plats)
+    capped = [replace(p, workers=plan_workers(int(p.workers or 0), len(plats),
+                                              parallel=parallel))
+              for p in plats]
+    after = sum(int(p.workers or 0) for p in capped)
+    if after < before:
+        plats = capped
+        avail = available_memory_mb()
+        mem_note = f"可用内存约 {avail:.0f}MB、" if avail else ""
+        per = max(int(p.workers or 0) for p in plats)
+        log(f"⚠ 并发已按机器规格下调：{before} -> {after} 个并发探测"
+            f"（每平台最多 {per} 个；{mem_note}{os.cpu_count() or 4} 核）。"
+            f"想手动指定：EO_MAX_CONCURRENT=<总进程数>")
 
     kwargs = dict(targets=targets, log=log, quiet=quiet, limiter=limiter,
                   stop_event=stop_event, on_result=on_result, on_plan=on_plan)

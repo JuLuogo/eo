@@ -253,15 +253,26 @@ check("能从配置里取到访问令牌", bool(token), token[:8] + "…" if tok
 
 triggered = False
 if token:
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/control/run-once", method="POST",
-        data=b"{}", headers={"Authorization": f"Bearer {token}",
-                             "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            triggered = json.loads(resp.read().decode()) .get("ok") is True
-    except Exception as exc:                                   # noqa: BLE001
-        print(f"     触发失败: {type(exc).__name__}: {exc}")
+    def _post(path: str) -> bool:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", method="POST",
+            data=b"{}", headers={"Authorization": f"Bearer {token}",
+                                 "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode()).get("ok") is True
+        except Exception as exc:                               # noqa: BLE001
+            print(f"     {path} 失败: {type(exc).__name__}: {exc}")
+            return False
+
+    # 上一次运行如果还没彻底停下，run-once 会返回 409；先确保空闲再触发，
+    # 并重试几次（小机器上收尾可能慢一点）
+    _post("/api/control/stop")
+    for _ in range(3):
+        triggered = _post("/api/control/run-once")
+        if triggered:
+            break
+        time.sleep(1.5)
 check("成功触发一轮扫描", triggered)
 
 time.sleep(2.0)                 # 让这一轮真正进入扫描

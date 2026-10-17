@@ -54,7 +54,10 @@ services:
       # 留空即可：程序会按 EO_NETWORK 自动推导出 eo-<运营商>,esa-<运营商>,cft-<运营商>。
       # 只有想精确指定平台组合时才需要显式填写。
       EO_PLATFORMS: "${EO_PLATFORMS:-}"
-      EO_RATE: "${EO_RATE:-100}"          # ★ 全平台合计 TCP 连接上限 100/秒
+      EO_RATE: "${EO_RATE:-100}"          # ★ 全平台合计 TCP 连接上限 100/秒（新建速率）
+      # 同时运行的探测进程总数上限。留空=按内存+核数自动算（防小机器被压垮）。
+      # 1.85GB/4 核会自动压到约 30 个；被跑满就显式设 16。
+      EO_MAX_CONCURRENT: "${EO_MAX_CONCURRENT:-}"
       EO_INTERVAL: "${EO_INTERVAL:-300}"
       EO_WINDOW: "${EO_WINDOW:-}"         # 例如 00:00-07:00，留空=全天
       EO_WORKERS: "${EO_WORKERS:-}"       # 单平台并发数，留空用内置默认 80

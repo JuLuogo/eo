@@ -43,6 +43,7 @@ pip install pytest && pytest tests/ -v
 | `test_ranges.py` | CloudFront/Cloudflare 网段解析、ESA BGP 前缀与中国大陆剔除（含区间合并） | 网段拉取正确 |
 | `test_cli_e2e.py` | scan 落盘、monitor 多轮、时间窗口、`--targets` 校验、退出码、运营商选择（`-n`/`-p`/`EO_NETWORK`）、`-p`/`-n` 冲突处理 | **命令行可用** |
 | `test_shutdown.py` | 真起进程发 SIGTERM/SIGINT：monitor 与 web 都要在宽限期内**退出码 0**（不是被强杀）、端口释放；结果文件**原子替换**（模拟中断后旧文件完好） | **docker stop 不能把结果写坏** |
+| `test_resources.py` | 按可用内存/核数计算并发上限、`EO_MAX_CONCURRENT` 覆盖、按平台数摊分、接线到 `scan_platforms`（平台对象不被就地修改） | **小内存机器不能被自己的并发压垮** |
 
 ## Docker 集成测试
 
