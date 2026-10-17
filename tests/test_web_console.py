@@ -300,6 +300,37 @@ try:
     st, r = call("/api/control/dns-push", "POST", {})
     check("mode=dry-run 时拒绝下发", r.get("ok") is False, str(r)[:90])
 
+    print()
+    print("14) 网页上按平台设置延迟门槛 / 取前 N（表单提交的是字符串）")
+    st, r = call("/api/config", "POST", {"platforms": {"eo-lt": {
+        "max_latency_ms": "150", "top_n": "10",
+        "workers": "12", "timeout": "2.5", "retries": "0", "sample_per_24": "4"}}})
+    check("接受字符串形式的数值", st == 200, f"{st} {str(r)[:70]}")
+    plats = {p.key: p for p in svc.build_platforms()}
+    eo = plats.get("eo-lt")
+    check("max_latency_ms 存成了数字 150.0",
+          eo is not None and eo.max_latency_ms == 150.0,
+          str(getattr(eo, "max_latency_ms", None)))
+    check("top_n 存成了数字 10", eo is not None and eo.top_n == 10,
+          str(getattr(eo, "top_n", None)))
+    check("workers 被转成 int（否则线程池会报错）",
+          eo is not None and isinstance(eo.workers, int) and eo.workers == 12,
+          f"{getattr(eo, 'workers', None)!r}")
+    check("timeout 被转成 float",
+          eo is not None and isinstance(eo.timeout, float) and eo.timeout == 2.5,
+          f"{getattr(eo, 'timeout', None)!r}")
+    check("retries / sample_per_24 也转成 int",
+          eo is not None and eo.retries == 0 and eo.sample_per_24 == 4,
+          f"{getattr(eo, 'retries', None)!r} {getattr(eo, 'sample_per_24', None)!r}")
+
+    st, r = call("/api/config", "POST", {"platforms": {"eo-lt": {
+        "max_latency_ms": "", "top_n": ""}}})
+    plats = {p.key: p for p in svc.build_platforms()}
+    eo = plats.get("eo-lt")
+    check("空字符串 = 回退默认（不限延迟、不限数量）",
+          eo is not None and not eo.max_latency_ms and not eo.top_n,
+          f"{getattr(eo, 'max_latency_ms', None)!r} {getattr(eo, 'top_n', None)!r}")
+
 finally:
     try:
         svc.runner.stop()
@@ -307,6 +338,46 @@ finally:
         pass
     try:
         server.shutdown()
+    except Exception:
+        pass
+
+# --------------------------------------------------------------------------
+print()
+print("15) 关闭网页令牌（EO_WEB_AUTH=off）：不带令牌也能访问")
+# --------------------------------------------------------------------------
+os.environ.pop("EO_WEB_TOKEN", None)
+os.environ["EO_WEB_AUTH"] = "off"
+cfgdir2 = Path(tempfile.mkdtemp(prefix="eo-web-noauth-"))
+atexit.register(shutil.rmtree, cfgdir2, ignore_errors=True)
+svc2 = make_service(cfgdir2 / "config.json")
+server2 = WebServer(svc2, host="127.0.0.1", port=0)
+port2 = server2.httpd.server_address[1]
+threading.Thread(target=server2.serve_forever, daemon=True).start()
+time.sleep(0.6)
+try:
+    def call2(path, method="GET", payload=None):
+        url = f"http://127.0.0.1:{port2}{path}"
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(url, data=data, method=method,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, {}
+
+    check("配置里 web_auth 已关闭", svc2.store.get().web_auth is False,
+          str(svc2.store.get().web_auth))
+    st, _ = call2("/api/status")
+    check("不带令牌访问 /api/status -> 200", st == 200, str(st))
+    st, _ = call2("/api/logs")
+    check("不带令牌访问 /api/logs -> 200", st == 200, str(st))
+    st, _ = call2("/api/config", "POST", {"interval": 600})
+    check("不带令牌也能改配置", st == 200, str(st))
+finally:
+    os.environ.pop("EO_WEB_AUTH", None)
+    try:
+        server2.shutdown()
     except Exception:
         pass
 

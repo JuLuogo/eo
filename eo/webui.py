@@ -171,6 +171,11 @@ class OptimizerService:
                          (cfg.workers or base.workers)),
                 sample_per_24=(override.sample_per_24 if override and override.sample_per_24
                                else base.sample_per_24),
+                max_latency_ms=(override.max_latency_ms if override
+                                and override.max_latency_ms is not None
+                                else cfg.max_latency_ms),
+                top_n=(override.top_n if override and override.top_n is not None
+                       else cfg.top_n),
                 targets_file=(override.targets_file if override and override.targets_file
                               else base.targets_file),
                 output_file=(override.output_file if override and override.output_file
@@ -250,8 +255,9 @@ class OptimizerService:
             dns_force=bool(extra.get("dns_force", False)),
             quiet=True,            # Web 端日志走事件，不重复打印
             verbose=cfg.verbose,
-            max_latency_ms=cfg.max_latency_ms,
-            top_n=cfg.top_n,
+            # 0/None 表示「不覆盖平台自己的设置」，这样网页上按平台配的门槛才生效
+            max_latency_ms=cfg.max_latency_ms or None,
+            top_n=cfg.top_n or None,
         )
 
     # ---- 运行控制 ----
@@ -398,6 +404,8 @@ class OptimizerService:
                 "timeout": platform.timeout,
                 "retries": platform.retries,
                 "sample_per_24": platform.sample_per_24,
+                "max_latency_ms": platform.max_latency_ms,
+                "top_n": platform.top_n,
                 "ping": platform.precheck_ping,
                 "status_codes": ",".join(platform.status_codes),
                 "dns_enabled": bool(platform.dns),
@@ -445,6 +453,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self, query: dict) -> bool:
+        # 内网/单机可以关掉令牌校验（EO_WEB_AUTH=off）。关掉后任何能访问该端口
+        # 的人都能改配置、触发扫描、下发 DNS —— 只在可信网络里这么用。
+        if not self.service.store.get().web_auth:
+            return True
         token = self.service.store.web_token
         if not token:
             return True

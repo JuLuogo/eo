@@ -39,6 +39,40 @@ def _mask(value: str) -> str:
     return f"{value[:4]}{MASK}{value[-4:]}"
 
 
+# 网页表单提交的都是字符串，直接存进配置会让后续逻辑拿到 "80" 而不是 80，
+# 于是 ThreadPoolExecutor(max_workers="80") 之类的调用直接报错。
+# 所以按字段类型统一转换一次；空字符串表示「回退到默认」，存 None。
+_DROP = object()
+_STR_FIELDS = {"host", "scheme", "targets_file", "output_file", "http_path",
+               "status_codes", "auto_targets"}
+_INT_FIELDS = {"workers", "retries", "sample_per_24", "top_n"}
+_FLOAT_FIELDS = {"timeout", "max_latency_ms"}
+_BOOL_FIELDS = {"enabled", "ping"}
+
+
+def _coerce_platform_field(name: str, raw):
+    """把网页传来的值转成 PlatformSettings 里该有的类型。"""
+    if name in _STR_FIELDS:
+        return str(raw)
+    if raw == "" or raw is None:
+        return None if name in (_INT_FIELDS | _FLOAT_FIELDS) else _DROP
+    if name in _BOOL_FIELDS:
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if name in _INT_FIELDS:
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return _DROP
+    if name in _FLOAT_FIELDS:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return _DROP
+    return raw
+
+
 @dataclass
 class PlatformSettings:
     """单个平台在网页上可调的设置（None 表示沿用 platforms.py 里的值）。"""
@@ -53,6 +87,8 @@ class PlatformSettings:
     timeout: float | None = None
     retries: int | None = None
     sample_per_24: int | None = None    # 粗扫抽样：每 /24 取几个代表 IP
+    max_latency_ms: float | None = None  # 延迟门槛：超过就丢弃（None/0 = 不限）
+    top_n: int | None = None             # 只保留最快的 N 个（None/0 = 全部）
     http_path: str = "/"
     status_codes: str = "200"          # 逗号分隔
     ping: bool = False
@@ -110,6 +146,9 @@ class AppConfig:
     max_latency_ms: float = 0.0        # 延迟门槛：超过就丢弃；0 = 不限
     top_n: int = 0                     # 只保留最快的 N 个；0 = 全部保留
     web_token: str = ""                # 网页访问令牌，空则自动生成
+    # 是否校验网页访问令牌。内网/单机可以关掉（EO_WEB_AUTH=off）：
+    # 关掉后任何能访问该端口的人都能改配置、触发扫描、下发 DNS，务必确认网络可信。
+    web_auth: bool = True
     auto_run: bool = False             # 容器启动后是否自动开始循环
     platforms: dict[str, PlatformSettings] = field(default_factory=dict)
     dns: dict[str, DnsSettings] = field(default_factory=dict)
@@ -133,6 +172,7 @@ class AppConfig:
             "max_latency_ms": self.max_latency_ms,
             "top_n": self.top_n,
             "auto_run": self.auto_run,
+            "web_auth": self.web_auth,
             "web_token_set": bool(self.web_token),
             "web_token_masked": _mask(self.web_token) if self.web_token else "",
             "platforms": {k: v.to_dict() for k, v in self.platforms.items()},
@@ -146,7 +186,7 @@ class AppConfig:
         for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                     "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
                     "notify_always", "log_buffer", "max_latency_ms", "top_n",
-                    "web_token", "auto_run"):
+                    "web_token", "web_auth", "auto_run"):
             if key in data and data[key] is not None:
                 setattr(config, key, data[key])
 
@@ -163,6 +203,8 @@ class AppConfig:
                     timeout=value.get("timeout"),
                     retries=value.get("retries"),
                     sample_per_24=value.get("sample_per_24"),
+                    max_latency_ms=value.get("max_latency_ms"),
+                    top_n=value.get("top_n"),
                     http_path=value.get("http_path", "/"),
                     status_codes=value.get("status_codes", "200"),
                     ping=bool(value.get("ping", False)),
@@ -240,6 +282,9 @@ def env_overrides() -> dict:
         "EO_LOG_BUFFER": ("log_buffer", int),
         "EO_MAX_MS": ("max_latency_ms", float),
         "EO_TOP": ("top_n", int),
+        # 关掉网页令牌校验（内网/单机）。off/false/0/no 都算关闭
+        "EO_WEB_AUTH": ("web_auth",
+                        lambda v: str(v).strip().lower() not in ("off", "false", "0", "no", "none")),
         "EO_WEBHOOK": ("webhook", str),
         "EO_AUTO_RUN": ("auto_run", lambda v: str(v).strip().lower() in ("1", "true", "yes", "on")),
         "EO_DNS_SYNC": ("dns_mode", str),
@@ -361,7 +406,7 @@ class ConfigStore:
             for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                         "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
                         "notify_always", "log_buffer", "max_latency_ms", "top_n",
-                        "auto_run"):
+                        "web_auth", "auto_run"):
                 if key in patch and patch[key] is not None:
                     setattr(config, key, patch[key])
                     self.explicit.add(key)
@@ -372,9 +417,13 @@ class ConfigStore:
                 current = config.platforms.get(key) or PlatformSettings(key=key)
                 for field_name in ("enabled", "host", "scheme", "targets_file", "output_file",
                                    "workers", "timeout", "retries", "sample_per_24",
+                                   "max_latency_ms", "top_n",
                                    "http_path", "status_codes", "ping", "auto_targets"):
                     if field_name in value and value[field_name] is not None:
-                        setattr(current, field_name, value[field_name])
+                        coerced = _coerce_platform_field(field_name, value[field_name])
+                        if coerced is _DROP:
+                            continue
+                        setattr(current, field_name, coerced)
                 config.platforms[key] = current
 
             for key, value in (patch.get("dns") or {}).items():

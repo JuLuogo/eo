@@ -851,14 +851,21 @@ def cmd_web(args) -> int:
     service = make_service(Path(args.config) if getattr(args, "config", None) else None)
     host = args.host_bind or os.environ.get("EO_WEB_HOST", "0.0.0.0")
     port = args.port or int(os.environ.get("EO_WEB_PORT", "8787"))
+    auth_on = bool(service.store.get().web_auth)
     token = service.store.web_token
 
     banner("Web 控制台已启动")
     safe_log(f"  监听地址   : http://{host}:{port}")
-    safe_log(f"  访问令牌   : {token}")
-    safe_log(f"  带令牌访问 : http://<服务器IP>:{port}/?token={token}")
+    if auth_on:
+        safe_log(f"  访问令牌   : {token}")
+        safe_log(f"  带令牌访问 : http://<服务器IP>:{port}/?token={token}")
+    else:
+        safe_log("  访问令牌   : 已关闭（EO_WEB_AUTH=off）")
+        safe_log("  ⚠ 任何能访问该端口的人都能改配置、触发扫描、下发 DNS —— 仅限可信内网")
+        safe_log(f"  直接访问   : http://<服务器IP>:{port}/")
     safe_log(f"  配置文件   : {service.store.path}")
-    safe_log("  提示：令牌也写在配置文件里（config/web_token），可随时更换。")
+    if auth_on:
+        safe_log("  提示：令牌也写在配置文件里（config/web_token），可随时更换。")
 
     if service.store.get().auto_run:
         ok, message = service.start()
