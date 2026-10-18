@@ -28,6 +28,19 @@
 #   SET_REGISTRY_MIRROR  1=写入 Docker 国内镜像加速配置
 set -euo pipefail
 
+# -h/--help 只打印用法就退出：这个脚本会装 Docker、写配置、起容器，
+# 用户想先看看它做什么，不该直接开始改系统。
+for _arg in "$@"; do
+    case "$_arg" in
+        -h|--help)
+            sed -n '2,28p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+            echo
+            echo "更多说明见 INSTALL.md / README.md"
+            exit 0
+            ;;
+    esac
+done
+
 DIR="${DIR:-/opt/edge-optimizer}"
 REPO="${REPO:-https://gitee.com/peroe/eo.git}"
 REPO_FALLBACK="${REPO_FALLBACK:-https://github.com/JuLuogo/eo.git}"

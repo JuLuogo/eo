@@ -46,6 +46,7 @@ SUITES = {
     "global_types": "全局配置字段的类型安全：字符串数值/布尔串/空串/非法值都不能改坏配置",
     "isp_detect": "运营商识别（deploy.sh isp）：中英文归属名、ASN 兜底、异常不崩",
     "auto_targets": "自动拉取网段：新鲜度冷却、失败保留旧文件、接线正确不复活死字段",
+    "deploy_scripts": "部署脚本静态审计：语法、--help 不触发安装、可执行位、危险 rm、文档引用",
 }
 
 # 需要 Docker 的套件不放进 run_all（它单独跑）：

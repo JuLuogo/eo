@@ -20,6 +20,37 @@
 # 用 POSIX sh 编写，Ubuntu/Debian/CentOS/Alpine 都能直接跑。
 set -eu
 
+# -h/--help 必须只打印用法就退出。
+# 这个脚本会装系统包、拉代码、建虚拟环境 —— 用户想先看看它要做什么，
+# 结果直接开始改系统，是很糟糕的体验。
+for _arg in "$@"; do
+    case "$_arg" in
+        -h|--help)
+            cat <<'USAGE'
+边缘节点优选 —— 一键安装脚本
+
+用法：
+  ./install.sh                        # 默认装到 /opt/edge-optimizer，从 GitHub 拉取
+  curl -fsSL .../install.sh | sudo sh # 服务器上直接跑（不需要先 clone）
+
+可用环境变量：
+  REPO=https://gitee.com/peroe/eo.git   仓库地址
+  DIR=/opt/eo                           安装目录
+  BRANCH=main                           分支
+  PYTHON_BIN=python3                    Python 解释器
+  GITHUB_USER / GITHUB_TOKEN            私有仓库时的凭据（兼容 GITEE_USER / GITEE_TOKEN）
+  REPO_HOST=github.com                  下载加速/代理用的主机名
+
+脚本会依次：检查依赖 -> 拉取代码 -> 建立虚拟环境 -> 安装 Python 包
+            -> 调用 deploy.sh install（交互式询问运营商与端口）-> 打印后续步骤
+
+卸载：deploy.sh uninstall
+USAGE
+            exit 0
+            ;;
+    esac
+done
+
 REPO="${REPO:-https://github.com/JuLuogo/eo.git}"
 BRANCH="${BRANCH:-main}"
 DIR="${DIR:-/opt/edge-optimizer}"
