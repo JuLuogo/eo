@@ -94,7 +94,8 @@ def _defaults() -> dict:
 
 def vars_view(config, env_path: Path | None = None,
               config_path: Path | None = None,
-              explicit: set[str] | None = None) -> list[dict]:
+              explicit: set[str] | None = None,
+              from_env: set[str] | None = None) -> list[dict]:
     """返回常用变量的三方对照视图。
 
     config      : AppConfig（网页上的配置，已按优先级合并好）
@@ -103,6 +104,9 @@ def vars_view(config, env_path: Path | None = None,
     explicit    : 网页上「显式设置过」的字段集合。必须传 ConfigStore.explicit ——
                   不能靠「键是否存在于 config.json」判断，因为 save() 会把整个
                   配置连同默认值一起落盘，那样所有键看起来都像网页设置过。
+    from_env    : 环境变量**真正生效**的字段集合（ConfigStore.from_env）。
+                  不传时退化为「环境变量里有值就算」，但这会把非法值
+                  （如 EO_RATE=abc 被忽略）误标成"环境变量生效"。
     """
     defaults = _defaults()
     env_values: dict = {}
@@ -137,6 +141,9 @@ def vars_view(config, env_path: Path | None = None,
         effective = getattr(config, key, None)
         if key in explicit:
             source = "web"
+        elif from_env is not None:
+            # 以「真正生效」为准：非法值会被忽略，此时应当显示默认值来源
+            source = "env" if key in from_env else "default"
         elif env_value != "":
             source = "env"
         else:

@@ -378,7 +378,8 @@ class OptimizerService:
         env_path = env_file_path()
         config = self.store.get()
         return {
-            "vars": vars_view(config, env_path, self.store.path, self.store.explicit),
+            "vars": vars_view(config, env_path, self.store.path, self.store.explicit,
+                              getattr(self.store, "from_env", None)),
             "info": info_view(env_path),
             "env_file": str(env_path),
             "env_exists": env_path.exists(),

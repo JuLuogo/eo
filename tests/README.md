@@ -56,6 +56,8 @@ pip install pytest && pytest tests/ -v
 | `test_field_alignment.py` | 网页表单 `data-f` 字段必须能在 `PlatformSettings`/`DnsSettings` 里找到，且 `update()` 白名单覆盖全部可写字段 | **网页上填了不会静默保存失败** |
 | `test_window.py` | 跨零点窗口、端点包含、非法写法（`25:00-07:00`/`99:99`/`abc`）一律按"继续跑"处理并给出提示；循环里只提醒一次 | **一个笔误不能让监控静默停摆** |
 | `test_dns_edge.py` | IP 列表去重与非法地址剔除、A 记录混入 IPv6、137 个 IP 分 3 批、batch_size 越界、zone 不存在、骤降保护与 `--force`、dry-run 零写入、创建失败不留残局 | **极端输入下不下发错、不清空线上** |
+| `test_env_roundtrip.py` | 20 种取值（含 `"`、`#`、空格、反斜杠、制表符、中文、超长）写进 `.env` 再读回来必须一模一样；BOM、行尾注释、重复键 | **`env_set` 写的值下次启动读到的是同一个值** |
+| `test_varview.py` | 网页「常用设置」的来源标注（默认/环境变量/网页）、非法环境变量必须回落默认且不标成 env、面板不含密钥 | **面板说谁生效就得是谁生效** |
 
 另有 `bench_probe.py`（不在 run_all 里，手动跑）：对比进程内探测与 curl 子进程的速度，
 当前是单线程 **13 倍**差距（2330 次/秒 vs 179 次/秒）。

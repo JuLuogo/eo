@@ -123,7 +123,13 @@ def env_parse(path: Path) -> dict[str, str]:
         elif not (value.startswith('"') or value.startswith("'")):
             value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+            if value[0] == '"':
+                # 写入侧（env_quote）会把值里的 " 转义成 \"，这里必须还原，
+                # 否则「含双引号的值」写进去再读出来会多一个反斜杠 ——
+                # 表现为"写入成功但下次启动令牌/密钥不对"。
+                value = value[1:-1].replace('\\"', '"')
+            else:
+                value = value[1:-1]
         result[key] = value
     return result
 

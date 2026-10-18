@@ -329,10 +329,17 @@ class ConfigStore:
 
         self.explicit = set(raw_data.get(EXPLICIT_KEY) or [])
 
-        # 环境变量只作用于「网页上没有显式设置过」的字段
+        # 环境变量只作用于「网页上没有显式设置过」的字段。
+        # 同时记下**真正生效**的那些字段：env_overrides() 已经丢掉了空值与
+        # 类型非法的项，所以这里记下的就是"确实来自环境变量"的字段。
+        # 网页上的「常用设置」面板要靠它判断来源 ——
+        # 否则 EO_RATE=abc 这种非法值会让面板显示"环境变量生效"，
+        # 而实际生效的是默认值，用户会一直去改那个根本没生效的变量。
+        self.from_env: set[str] = set()
         for field, value in env_overrides().items():
             if field not in self.explicit:
                 setattr(config, field, value)
+                self.from_env.add(field)
 
         # 访问令牌：环境变量优先，其次文件，最后自动生成
         created_token = False
