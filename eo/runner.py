@@ -390,6 +390,7 @@ class CycleRunner:
         self.cycle = 0
         self.last_error = ""
         self.next_run_at = 0.0
+        self._window_warned: set[str] = set()   # 时间窗口写法问题只提醒一次
         self.current_interval = 0
         self.manual = False          # 当前是否是「立刻跑一轮」触发的一次性任务
 
@@ -480,6 +481,13 @@ class CycleRunner:
                 self.current_interval = interval
 
                 self.cycle += 1
+                # 窗口写法有问题就先说清楚。注意必须独立判断，不能放在
+                # 「不在窗口内」的分支里 —— 写法非法时 in_window() 一律返回 True，
+                # 那个分支根本不会进，提醒就永远发不出来。
+                problem = window_problem(window)
+                if problem and problem not in self._window_warned:
+                    self._window_warned.add(problem)
+                    self._emit({"type": "log", "line": f"⚠ {problem}", "level": "warn"})
                 if window and not in_window(window):
                     self._emit({"type": "log",
                                 "line": f"[{time.strftime('%H:%M:%S')}] 不在时间窗口 {window} 内，等待"})
@@ -520,18 +528,61 @@ class CycleRunner:
         return self._stop.is_set()
 
 
-def in_window(spec: str) -> bool:
-    """判断当前时间是否落在 HH:MM-HH:MM 窗口内（支持跨零点）。"""
+def parse_window(spec: str) -> tuple[int, int] | None:
+    """解析 ``HH:MM-HH:MM``，返回 (起始分钟, 结束分钟)；空或非法返回 None。
+
+    必须校验时/分范围：以前 ``25:00-07:00`` 这种写错的值会被算成
+    start=1500 > end=420，于是永远判定"不在窗口内" —— 监控从此静默停摆，
+    日志里只有一句"不在时间窗口内，等待"，看起来一切正常。
+    """
+    text = (spec or "").strip()
+    if not text:
+        return None
+    start_s, sep, end_s = text.partition("-")
+    if not sep:
+        return None
     try:
-        start_s, _, end_s = spec.partition("-")
         start_h, start_m = (int(x) for x in start_s.strip().split(":"))
         end_h, end_m = (int(x) for x in end_s.strip().split(":"))
-    except Exception:
+    except (ValueError, TypeError):
+        return None
+    for value, limit in ((start_h, 23), (end_h, 23)):
+        if not 0 <= value <= limit:
+            return None
+    for value in (start_m, end_m):
+        if not 0 <= value <= 59:
+            return None
+    return start_h * 60 + start_m, end_h * 60 + end_m
+
+
+def window_problem(spec: str) -> str:
+    """检查时间窗口写法，返回给用户看的提示；写法没问题时返回空串。"""
+    text = (spec or "").strip()
+    if not text:
+        return ""
+    parsed = parse_window(text)
+    if parsed is None:
+        return (f"时间窗口 {text!r} 写法无法识别（应为 HH:MM-HH:MM，例如 00:00-07:00）。"
+                f"已忽略该限制，将全天运行")
+    start, end = parsed
+    if start == end:
+        return (f"时间窗口 {text!r} 的起止时间相同，实际只有 1 分钟有效；"
+                f"想全天运行请留空")
+    return ""
+
+
+def in_window(spec: str) -> bool:
+    """判断当前时间是否落在 HH:MM-HH:MM 窗口内（支持跨零点）。
+
+    写法无法识别时返回 True（继续跑）——宁可多跑，也不要因为一个笔误
+    让监控悄无声息地停下。window_problem() 会给出提示。
+    """
+    parsed = parse_window(spec)
+    if parsed is None:
         return True
+    start, end = parsed
     now = time.localtime()
     minutes = now.tm_hour * 60 + now.tm_min
-    start = start_h * 60 + start_m
-    end = end_h * 60 + end_m
     if start <= end:
         return start <= minutes <= end
     return minutes >= start or minutes <= end

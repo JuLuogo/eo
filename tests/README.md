@@ -54,6 +54,8 @@ pip install pytest && pytest tests/ -v
 | `test_atomic_write.py` | 写入中途失败原文件完好、真并发读写 1600+ 次无半截、网段/结果/配置写入点全部原子；并静态检查没有别处直接 `write_text` | **并发读写不会看到半截文件** |
 | `test_env_consistency.py` | `.env.example` ↔ `docker-compose.yml` ↔ 代码实际读取三方对齐；关键变量必须透传；不接受"写了进不了容器"的变量 | **改了 .env 一定生效**（曾漏传 EO_MAX_MS/EO_TOP/EO_WEB_AUTH） |
 | `test_field_alignment.py` | 网页表单 `data-f` 字段必须能在 `PlatformSettings`/`DnsSettings` 里找到，且 `update()` 白名单覆盖全部可写字段 | **网页上填了不会静默保存失败** |
+| `test_window.py` | 跨零点窗口、端点包含、非法写法（`25:00-07:00`/`99:99`/`abc`）一律按"继续跑"处理并给出提示；循环里只提醒一次 | **一个笔误不能让监控静默停摆** |
+| `test_dns_edge.py` | IP 列表去重与非法地址剔除、A 记录混入 IPv6、137 个 IP 分 3 批、batch_size 越界、zone 不存在、骤降保护与 `--force`、dry-run 零写入、创建失败不留残局 | **极端输入下不下发错、不清空线上** |
 
 另有 `bench_probe.py`（不在 run_all 里，手动跑）：对比进程内探测与 curl 子进程的速度，
 当前是单线程 **13 倍**差距（2330 次/秒 vs 179 次/秒）。

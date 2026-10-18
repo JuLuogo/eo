@@ -50,7 +50,7 @@ from .core import (
 )
 from .platforms import PLATFORMS, get_platforms
 from .ratelimit import make_rate_limiter
-from .runner import CycleRunner, RunConfig
+from .runner import CycleRunner, RunConfig, window_problem
 from .runner import run_once as runner_run_once
 
 MIN_IPS_WARN = 3
@@ -405,6 +405,10 @@ def _monitor_loop(args, shutdown: _Shutdown) -> int:
                 safe_log(line)
 
     runner = CycleRunner(emit=emit)
+    # 时间窗口写法有问题就立刻说清楚，别等跑了一轮才发现
+    _problem = window_problem(getattr(args, "window", "") or "")
+    if _problem:
+        safe_log(f"⚠ {_problem}")
     runner.start(job, interval=interval, cycles=args.cycles or 0, window=args.window or "")
 
     # 主线程等待；收到 SIGTERM/SIGINT 时请求停止（当前轮收尾后退出）。

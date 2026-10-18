@@ -39,6 +39,8 @@ SUITES = {
     "atomic_write": "原子写：并发读写看不到半截文件、写入失败不破坏原文件",
     "env_consistency": "环境变量三方一致性：.env.example ↔ compose ↔ 代码实际读取",
     "field_alignment": "网页表单字段 ↔ 后端配置字段一致性（防静默保存失败）",
+    "window": "时间窗口：跨零点、端点、非法写法不能静默停摆",
+    "dns_edge": "DNS 下发极端输入：去重、非法地址、分批、骤降保护、失败不留残局",
 }
 
 # 需要 Docker 的套件不放进 run_all（它单独跑）：

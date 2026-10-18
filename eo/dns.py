@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 from dataclasses import dataclass, field
@@ -81,12 +82,16 @@ class DnsUpdateResult:
     deleted_batches: int = 0
     total_ips: int = 0
     errors: list[str] = field(default_factory=list)
+    cleaned_notes: list[str] = field(default_factory=list)   # 被清洗掉的非法/重复地址说明
 
     def summary(self) -> str:
         if not self.ok:
             return "下发失败: " + "; ".join(self.errors or ["未知错误"])
-        return (f"下发成功: 更新 {self.updated_batches} 个 / 新建 {self.created_batches} 个 / "
+        text = (f"下发成功: 更新 {self.updated_batches} 个 / 新建 {self.created_batches} 个 / "
                 f"删除 {self.deleted_batches} 个记录集，共写入 {self.total_ips} 个 IP")
+        if self.cleaned_notes:
+            text += f"（已清洗：{'；'.join(self.cleaned_notes)}）"
+        return text
 
 
 # --------------------------------------------------------------------------
@@ -376,7 +381,46 @@ def sync_records(
     """
     result = DnsUpdateResult(ok=False)
     log = _logger(log)
-    ips = [ip.strip() for ip in ips if ip and ip.strip()]
+
+    # 清洗：去空行、去重、剔除非法地址。
+    # 为什么必须做：
+    #   * 不去重 -> 同一个 IP 写两遍，部分服务商会拒绝整批（或产生重复解析值）
+    #   * 不校验 -> 文件里混进一行 "abc" 会让整批下发失败，
+    #     而用户看到的只是"下发失败"，不知道是哪个文件哪一行的问题
+    # 剔除的数量会明确报出来，避免"静默少下发"。
+    raw_ips = [ip.strip() for ip in ips if ip and str(ip).strip()]
+    cleaned: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for item in raw_ips:
+        try:
+            addr = ipaddress.ip_address(item)
+        except ValueError:
+            invalid.append(item)
+            continue
+        if target.record_type == "A" and addr.version != 4:
+            invalid.append(item)
+            continue
+        if target.record_type == "AAAA" and addr.version != 6:
+            invalid.append(item)
+            continue
+        if item in seen:
+            duplicates += 1
+            continue
+        seen.add(item)
+        cleaned.append(item)
+
+    if invalid or duplicates:
+        detail = []
+        if invalid:
+            shown = "、".join(invalid[:3]) + ("…" if len(invalid) > 3 else "")
+            detail.append(f"非法地址 {len(invalid)} 个（{shown}）")
+        if duplicates:
+            detail.append(f"重复地址 {duplicates} 个")
+        log(f"⚠ IP 列表已清洗：{'；'.join(detail)}")
+        result.cleaned_notes = detail
+    ips = cleaned
 
     if not target.zone_name or not target.record_name:
         result.errors.append("zone_name / record_name 不能为空")
