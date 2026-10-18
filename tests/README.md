@@ -51,6 +51,9 @@ pip install pytest && pytest tests/ -v
 | `test_deep.py` | 深扫：命中 /24 全量展开（不含网段号/广播）、带延迟列的结果文件、无上一轮结果时退化抽样、超量截断、与延迟门槛/取前 N 组合 | **深扫这条冷门路径可用** |
 | `test_dns_cli.py` | `-p eo` 基础名按运营商展开（含 `-n` 与 `EO_NETWORK` 组合、去重、拼错提示）+ `updatedns.py` 的确认、参数校验、单记录模式、退出码 | **文档里写的写法真的能跑** |
 | `test_sse.py` | SSE 收到 log/progress/runner 事件、6 个标签页并发、关闭后线程与 fd 回收、连接超时设置存在 | **网页长连接不泄漏** |
+| `test_atomic_write.py` | 写入中途失败原文件完好、真并发读写 1600+ 次无半截、网段/结果/配置写入点全部原子；并静态检查没有别处直接 `write_text` | **并发读写不会看到半截文件** |
+| `test_env_consistency.py` | `.env.example` ↔ `docker-compose.yml` ↔ 代码实际读取三方对齐；关键变量必须透传；不接受"写了进不了容器"的变量 | **改了 .env 一定生效**（曾漏传 EO_MAX_MS/EO_TOP/EO_WEB_AUTH） |
+| `test_field_alignment.py` | 网页表单 `data-f` 字段必须能在 `PlatformSettings`/`DnsSettings` 里找到，且 `update()` 白名单覆盖全部可写字段 | **网页上填了不会静默保存失败** |
 
 另有 `bench_probe.py`（不在 run_all 里，手动跑）：对比进程内探测与 curl 子进程的速度，
 当前是单线程 **13 倍**差距（2330 次/秒 vs 179 次/秒）。

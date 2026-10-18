@@ -140,6 +140,66 @@ time.sleep(0.8)
 fd3 = fds()
 check("200 次请求后 fd 稳定", fd3 <= base_fd + 10, f"{base_fd} -> {fd3}")
 
+# --------------------------------------------------------------------------
+print()
+print("6) monitor 循环长跑：12 轮后 fd / 线程 / 常驻内存都不增长")
+# --------------------------------------------------------------------------
+# monitor 模式（run.py monitor）用的就是 CycleRunner，与 web 端同一套；
+# 这里直接在进程里跑循环，比等 CLI 的 60 秒最小间隔快得多。
+from eo.runner import CycleRunner, run_once as runner_run_once      # noqa: E402
+
+
+def rss_now_mb() -> float:
+    """当前常驻内存（不是峰值 —— 峰值只增不减，看不出泄漏）。"""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as fh:
+            pages = int(fh.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE") / 1024 / 1024
+    except (OSError, ValueError, IndexError):
+        return -1.0
+
+
+mon_platforms = svc.build_platforms()
+mon_config = svc.build_run_config()
+mon_fd, mon_th, mon_rss = fds(), threads(), rss_now_mb()
+print(f"     基线：fd={mon_fd}  线程={mon_th}  常驻内存={mon_rss:.1f}MB")
+
+rounds = [0]
+
+
+def cycle_job(cycle_no: int, stop_event) -> None:                  # noqa: ANN001
+    runner_run_once(mon_platforms, mon_config, emit=lambda _e: None, stop_event=stop_event)
+    rounds[0] = cycle_no
+
+
+runner = CycleRunner()
+runner.start(cycle_job, interval=0.2, cycles=12)
+deadline = time.time() + 240
+while runner.running and time.time() < deadline:
+    time.sleep(0.5)
+runner.stop()
+time.sleep(0.5)
+
+end_fd, end_th, end_rss = fds(), threads(), rss_now_mb()
+check("12 轮都跑完了", rounds[0] == 12, f"{rounds[0]} 轮（每轮约 7 秒，含 1 秒超时）")
+check("fd 不增长", end_fd <= mon_fd + 8, f"{mon_fd} -> {end_fd}")
+check("线程不增长", end_th <= mon_th + 2, f"{mon_th} -> {end_th}")
+check("常驻内存不持续增长（<8MB）", end_rss - mon_rss < 8,
+      f"{mon_rss:.1f}MB -> {end_rss:.1f}MB（+{end_rss - mon_rss:.1f}MB）")
+
+print()
+print("7) 每轮的结果与历史文件都在写（确认上面不是「什么都没干」）")
+res_file = WORK / "r.txt"
+# 历史文件路径由平台配置决定（build_platforms 会给出解析后的绝对路径）
+hist_file = Path(mon_platforms[0].history_file) if mon_platforms else WORK / "none.jsonl"
+check("结果文件已生成", res_file.exists(), str(res_file))
+check("历史文件已生成", hist_file.exists(), str(hist_file))
+if hist_file.exists():
+    lines = [l for l in hist_file.read_text("utf-8").splitlines() if l.strip()]
+    check("历史文件按轮追加（>= 10 条）", len(lines) >= 10, f"{len(lines)} 条")
+    check("历史记录是合法 JSON",
+          all(json.loads(l).get("platform") for l in lines[:5]), "前 5 条可解析")
+
 try:
     svc.runner.stop()
     server.shutdown()

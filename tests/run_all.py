@@ -36,6 +36,9 @@ SUITES = {
     "deep": "深扫：命中 /24 全量展开、退化抽样、总量截断、与筛选组合",
     "dns_cli": "平台 key 展开（-p eo 基础名）+ updatedns.py 独立下发入口",
     "sse": "SSE 长连接：事件推送、多标签页、断开回收、连接超时",
+    "atomic_write": "原子写：并发读写看不到半截文件、写入失败不破坏原文件",
+    "env_consistency": "环境变量三方一致性：.env.example ↔ compose ↔ 代码实际读取",
+    "field_alignment": "网页表单字段 ↔ 后端配置字段一致性（防静默保存失败）",
 }
 
 # 需要 Docker 的套件不放进 run_all（它单独跑）：

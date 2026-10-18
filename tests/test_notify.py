@@ -149,6 +149,42 @@ check("非法 URL 返回 False（不抛异常）",
 check("非法 URL 有失败日志", any("失败" in l or "异常" in l for l in logs),
       (logs[0][:60] if logs else "(无)"))
 
+print()
+print("4b) 服务端接受连接但永不响应：必须在超时内放弃，不能把整轮卡住")
+# webhook 被黑洞、或对方服务挂了但 TCP 还通，是最常见的"告警发不出去"形态。
+import socket      # noqa: E402
+import time        # noqa: E402
+
+hang = socket.socket()
+hang.bind(("127.0.0.1", 0))
+hang.listen(1)
+hang_port = hang.getsockname()[1]
+held: list[socket.socket] = []
+
+
+def _accept_and_hold() -> None:
+    conn, _ = hang.accept()
+    held.append(conn)          # 收下连接，什么都不回
+    time.sleep(30)
+
+
+threading.Thread(target=_accept_and_hold, daemon=True).start()
+
+logs.clear()
+t0 = time.time()
+ok = send(f"http://127.0.0.1:{hang_port}/hook", "测试", log=logs.append, timeout=2.0)
+dt = time.time() - t0
+check("挂起的服务端被判为失败", ok is False, str(ok))
+check("在超时附近放弃（不是一直等）", 1.5 <= dt <= 6.0, f"{dt:.1f}s")
+check("日志里有失败原因", any("失败" in l or "异常" in l for l in logs),
+      (logs[0][:70] if logs else "(无)"))
+for conn in held:
+    try:
+        conn.close()
+    except OSError:
+        pass
+hang.close()
+
 # ------------------------------------------------------------------ 5. 业务封装
 print()
 print("5) 业务封装：notify_alert / notify_outcomes")

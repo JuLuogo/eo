@@ -1214,20 +1214,31 @@ def scan_platforms(
 # --------------------------------------------------------------------------
 # 5. 结果落盘 / 历史记录
 # --------------------------------------------------------------------------
+def atomic_write_text(path: Path, text: str) -> None:
+    """原子写文本：先写同目录临时文件，再 replace 覆盖目标。
+
+    为什么必须原子：这些文件会被**另一个进程/线程同时读**（网段文件被扫描读、
+    结果文件被 DNS 下发读）。直接 write_text 会先把文件截断再写，读到中间状态
+    就得到半截内容 —— 网段文件半截 = 静默少扫一批 IP，结果文件半截 = 少下发节点。
+    Path.replace 在同一文件系统上是原子的，读方要么看到旧内容、要么看到新内容。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = False) -> None:
     """写入结果文件。默认只写 IP，保持与原 yes.txt 完全兼容。
 
     用「临时文件 + 原子替换」写入：这个文件是给 curl --resolve 直接消费的，
     被中断时留下半截内容会让后续所有解析都指向一个残缺的列表。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     if with_latency:
         lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
     else:
         lines = [p.ip for p in probes]
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n".join(lines), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_text(path, "\n".join(lines))
 
 
 def append_history(path: Path, platform: Platform, outcome: ScanOutcome) -> None:

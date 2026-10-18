@@ -64,13 +64,23 @@ services:
       EO_TIMEOUT: "${EO_TIMEOUT:-}"       # 单次探测超时秒数，留空用内置默认 3
       EO_RETRIES: "${EO_RETRIES:-}"       # 失败重试次数，留空用内置默认 1
       EO_PING: "${EO_PING:-}"             # 1=探测前先 ping 预筛（默认关，部分机房屏蔽 ICMP）
+      # ---- 结果筛选：只留下又快又稳的节点（也可在网页「平台设置」里按平台单独设）----
+      EO_MAX_MS: "${EO_MAX_MS:-}"         # 延迟门槛：连接耗时超过该毫秒数就丢弃；留空=不限
+      EO_TOP: "${EO_TOP:-}"               # 只保留最快的 N 个；留空=全部保留
       EO_LOG_BUFFER: "${EO_LOG_BUFFER:-500}"   # 网页实时日志保留条数（内存环形缓冲）
+      # 是否校验网页访问令牌。off=关闭（内网/单机免去 ?token=），
+      # 关掉后任何能访问该端口的人都能改配置、触发扫描、下发 DNS。
+      EO_WEB_AUTH: "${EO_WEB_AUTH:-on}"
       EO_AUTO_RUN: "${EO_AUTO_RUN:-false}"     # true=容器启动即开始循环
       EO_CYCLES: "${EO_CYCLES:-}"         # monitor 模式跑几轮，留空=一直跑
       EO_EXTRA_ARGS: "${EO_EXTRA_ARGS:-}" # 追加任意参数，如 "--ping --retries 2"
       EO_DNS_SYNC: "${EO_DNS_SYNC:-none}" # none | dry-run | push
       EO_CONFIRM_DNS: "${EO_CONFIRM_DNS:-no}"   # push 时需要 yes
       EO_SHUTDOWN_GRACE: "${EO_SHUTDOWN_GRACE:-5}"  # 停止时留给本轮收尾的秒数
+      # ---- 进阶开关（留空即用内置默认，一般不用动）----
+      EO_PROBE: "${EO_PROBE:-}"           # 留空=进程内探测；curl=退回旧实现做对照
+      EO_DEEP_MAX_NETWORKS: "${EO_DEEP_MAX_NETWORKS:-1024}"  # 深扫最多覆盖多少个 /24
+      EO_WEB_SOCKET_TIMEOUT: "${EO_WEB_SOCKET_TIMEOUT:-30}"  # 网页连接的 socket 超时秒数
       EO_SEED_TARGETS: "${EO_SEED_TARGETS:-1}"      # 1=挂载目录缺网段文件时自动补
       EO_WEBHOOK: "${EO_WEBHOOK:-}"
       # ---- 凭据（也可以用网页表单填，会被写进 config/config.json）----

@@ -71,6 +71,8 @@ def update_targets_file(key: str, path: Path, log: Callable[[str], None] = print
         f"# 共 {len(prefixes)} 个网段；可用 `python run.py ranges --source {key}` 重新拉取",
         "",
     ]
-    path.write_text("\n".join(header + prefixes) + "\n", encoding="utf-8")
+    # 原子写：扫描可能正在读这个文件，直接覆盖会读到半截网段列表（静默少扫）
+    from .core import atomic_write_text
+    atomic_write_text(path, "\n".join(header + prefixes) + "\n")
     log(f"{key}: 已写入 {len(prefixes)} 个网段 -> {path}")
     return len(prefixes)

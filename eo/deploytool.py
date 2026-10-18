@@ -152,7 +152,9 @@ def env_set(path: Path, key: str, value: str) -> None:
             break
     if not replaced:
         lines.append(new_line)
-    path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+    # 原子写：服务启动时会读 .env，写到一半被读到会丢掉后面的键
+    from .core import atomic_write_text
+    atomic_write_text(path, "\n".join(lines).rstrip("\n") + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:

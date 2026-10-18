@@ -269,8 +269,10 @@ def run_once(
             }
             for o, suspended in results
         ]
-        Path(config.write_json).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                                           encoding="utf-8")
+        # 原子写：这个文件是给外部程序读的，半截 JSON 会让对方解析失败
+        from .core import atomic_write_text
+        atomic_write_text(Path(config.write_json),
+                          json.dumps(payload, ensure_ascii=False, indent=2))
         log(f"JSON 汇总 -> {config.write_json}")
 
     # 全部平台都失败时，这是配置问题（如网段文件缺失），必须显式报错。
