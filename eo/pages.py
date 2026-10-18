@@ -237,6 +237,9 @@ PAGE_HTML = r"""<!DOCTYPE html>
             <label class="switch" style="margin-top:8px">
               <input type="checkbox" id="d-dnsconfirm"> 我确认允许修改线上解析
             </label>
+            <label class="switch" style="margin-top:8px">
+              <input type="checkbox" id="d-dnsforce"> 允许大幅缩容（把「DNS 下发数量」改小后首次需要）
+            </label>
           </div>
           <div class="field">
             <label>&nbsp;</label>
@@ -698,8 +701,13 @@ function bind(){
   document.getElementById('btn-push').onclick = async ()=>{
     if (!document.getElementById('d-dnsconfirm').checked){
       toast('请先勾选「我确认允许修改线上解析」', 'err'); return; }
+    // 首次把「DNS 下发数量」从全部改成很小的值时，会被解析量骤降保护拦住；
+    // 勾上这个框才会带 force 越过（默认不勾，避免误操作把解析砍掉大半）。
+    const force = document.getElementById('d-dnsforce').checked;
+    if (force && !confirm('已勾选「允许大幅缩容」：本次可能把线上解析砍掉一大半，确定吗？')) return;
     if (!confirm('确定要修改线上 DNS 解析吗？')) return;
-    const r = await post('/api/control/dns-push'); toast(r.message, r.ok?'ok':'err'); };
+    const r = await post('/api/control/dns-push', {force: force});
+    toast(r.message, r.ok?'ok':'err'); };
   document.getElementById('btn-clear').onclick = async ()=>{
     await post('/api/logs/clear');
     document.getElementById('log').innerHTML=''; LOG_CURSOR=0; toast('日志已清空'); };

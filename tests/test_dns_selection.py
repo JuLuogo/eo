@@ -174,6 +174,36 @@ check("注释里写明了为什么不用纯 TCP 握手",
       "物理上不可能" in src, "有")
 
 print()
+print("8) 骤降保护与「允许大幅缩容」入口")
+# --------------------------------------------------------------------------
+# 用户实际会遇到：线上 530 条记录，把「DNS 下发数量」设成 10，
+# 第一次下发会被骤降保护拦住（下限是现有的 1/4 = 132）。
+# 所以网页上必须有个明确的开关，否则用户只会看到一直失败。
+#
+# 这里直接测判定函数（不引入别的测试模块 —— 那些文件是脚本式的，
+# import 就会把它们整份跑一遍）。
+from eo.dns import _shrunk_too_much                                # noqa: E402
+
+check("530 -> 10 被拦住", _shrunk_too_much(530, 10, False) != "",
+      _shrunk_too_much(530, 10, False)[:60])
+check("拦下来的提示里说明可以加 --force",
+      "--force" in _shrunk_too_much(530, 10, False), _shrunk_too_much(530, 10, False)[:70])
+check("force=True 时放行", _shrunk_too_much(530, 10, True) == "", "放行")
+check("530 -> 200 不拦（在 1/4 之上）", _shrunk_too_much(530, 200, False) == "", "放行")
+check("现有 0 条时不拦（首次创建）", _shrunk_too_much(0, 10, False) == "", "放行")
+
+# 网页入口
+webui_src = (ROOT / "eo" / "webui.py").read_text(encoding="utf-8")
+pages_src = (ROOT / "eo" / "pages.py").read_text(encoding="utf-8")
+check("dns_push 支持 force 参数", "def dns_push(self, force: bool = False)" in webui_src,
+      "已支持")
+check("路由会读取 body 里的 force", 'body.get("force", False)' in webui_src, "已接线")
+check("网页上有「允许大幅缩容」复选框", "d-dnsforce" in pages_src, "有")
+check("勾选后带 force 提交", "post('/api/control/dns-push', {force: force})" in pages_src,
+      "已接线")
+check("勾选时会二次确认", "可能把线上解析砍掉一大半" in pages_src, "有确认")
+
+print()
 print("=" * 70)
 if _failures:
     print(f"文件/DNS 口径分离测试：失败 {len(_failures)} 项")

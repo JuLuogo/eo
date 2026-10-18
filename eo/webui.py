@@ -350,8 +350,15 @@ class OptimizerService:
     def dns_preview(self) -> tuple[bool, str]:
         return self.run_single({"dns_mode": "dry-run", "no_write": True})
 
-    def dns_push(self) -> tuple[bool, str]:
-        return self.run_single({"dns_mode": "push", "dns_confirm": True, "no_write": True})
+    def dns_push(self, force: bool = False) -> tuple[bool, str]:
+        """手动下发。force=True 时越过「解析量骤降保护」。
+
+        为什么需要这个开关：把「DNS 下发数量」从"全部"改成"只发最快的 10 个"
+        时，现有 530 条要缩到 10 条，骤降保护会拦下来（下限是现有的 1/4）。
+        没有这个入口的话，用户在网页上点下发只会一直失败、不知道怎么办。
+        """
+        return self.run_single({"dns_mode": "push", "dns_confirm": True,
+                                "no_write": True, "dns_force": force})
 
     # ---- 状态 ----
     def config_payload(self) -> dict:
@@ -557,7 +564,8 @@ class _Handler(BaseHTTPRequestHandler):
             ok, message = service.dns_preview()
             self._json({"ok": ok, "message": message}, 200 if ok else 409)
         elif path == "/api/control/dns-push":
-            ok, message = service.dns_push()
+            # 允许网页带 force 越过骤降保护（首次从几百条缩到十几条时会用到）
+            ok, message = service.dns_push(force=bool(body.get("force", False)))
             self._json({"ok": ok, "message": message}, 200 if ok else 409)
         elif path == "/api/logs/clear":
             service.logs = LogBuffer(service.store.get().log_buffer)
