@@ -1050,14 +1050,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+# 所有子命令名。默认命令是 scan：`python run.py -p eo` 等价于
+# `python run.py scan -p eo`（README 里就是这么写的，属于对外承诺的用法）。
+SUBCOMMANDS = ("scan", "monitor", "test", "list", "dns-check", "selftest", "doctor",
+               "web", "ranges", "esa-ranges")
+DEFAULT_COMMAND = "scan"
 
-    # 兼容旧用法：python run.py -p eo  ->  python run.py scan -p eo
-    known = {"scan", "monitor", "test", "list", "dns-check", "selftest", "doctor", "web",
-             "ranges", "esa-ranges"}
-    if argv and argv[0] not in known and argv[0] not in ("-h", "--help"):
-        argv = ["scan", *argv]
+
+def normalize_argv(argv: list[str]) -> list[str]:
+    """把「省略子命令」的写法补全，例如 ``-p eo`` -> ``scan -p eo``。
+
+    抽成函数是为了让测试走同一条路径：直接对着 build_parser() 调 parse_args
+    会绕过这里，从而把文档里本来可用的命令误判成不可用。
+    """
+    if argv and argv[0] not in SUBCOMMANDS and argv[0] not in ("-h", "--help"):
+        return [DEFAULT_COMMAND, *argv]
+    return list(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = normalize_argv(list(sys.argv[1:] if argv is None else argv))
 
     parser = build_parser()
     args = parser.parse_args(argv)
