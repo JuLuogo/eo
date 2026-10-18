@@ -75,8 +75,19 @@ if platform_section:
           f"未知字段: {unknown}" if unknown else f"{len(used)} 个字段全部匹配")
     print(f"     平台面板字段: {used}")
     # 反向：新加的字段要真的出现在界面上（否则等于没做）
+    # 下发筛选（max_latency_ms / top_n）已经从「平台设置」搬到「DNS 下发」面板 ——
+    # 用户找的是「前多少下发到 DNS」，放平台面板里根本看不到。
+    filter_section = re.search(r"function renderDnsFilters.*?\n}\n", source, re.S)
+    check("找得到 DNS 下发筛选块", filter_section is not None)
+    filter_used: list[str] = []
+    if filter_section:
+        filter_used = sorted(set(re.findall(r'data-pf="([^"]+)"', filter_section.group(0))))
+        unknown = [n for n in filter_used if n not in platform_fields]
+        check("筛选块字段能对上 PlatformSettings", not unknown,
+              f"未知: {unknown}" if unknown else f"{len(filter_used)} 个字段全部匹配")
+    ui_fields = set(used) | set(filter_used)
     for must in ("max_latency_ms", "top_n", "workers", "timeout", "retries", "sample_per_24"):
-        check(f"  {must} 在界面上有输入框", must in used, "有" if must in used else "缺")
+        check(f"  {must} 在界面上有输入框", must in ui_fields, "有" if must in ui_fields else "缺")
 
 # --------------------------------------------------------------------------
 print()

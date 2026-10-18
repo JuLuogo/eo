@@ -255,7 +255,12 @@ PAGE_HTML = r"""<!DOCTYPE html>
         <div class="hint" style="margin-bottom:12px">
           安全设计：模式下必须选「执行」且勾选确认，才会真正改 DNS；任一条件不满足自动降级为预览。
         </div>
-        <div id="dns-panels"></div>
+        <div class="hint" style="margin-bottom:6px">
+          <b>下发筛选</b>：只把测试结果里延迟达标、最快的 N 个 IP 写进 DNS；结果文件本身仍然保留全部可用 IP。
+          「预览下发 / 立即下发」会先自动保存这里的改动。
+        </div>
+        <div id="dns-filters"></div>
+        <div id="dns-panels" style="margin-top:14px"></div>
       </div>
     </section>
   </div>
@@ -549,6 +554,7 @@ function renderConfig(cfg){
   document.getElementById('d-dnsmode').value = cfg.dns_mode || 'none';
   document.getElementById('d-dnsconfirm').checked = !!cfg.dns_confirm;
   renderPlatforms(cfg);
+  renderDnsFilters(cfg);
   renderDns(cfg);
 }
 
@@ -574,8 +580,6 @@ function renderPlatforms(cfg){
       field('超时秒数（留空=默认）', key, 'timeout', p.timeout) +
       field('重试次数（留空=默认）', key, 'retries', p.retries) +
       field('粗扫抽样（每 /24 取几个 IP，留空=默认）', key, 'sample_per_24', p.sample_per_24) +
-      field('DNS 下发延迟上限（ms，超过不下发；0/空=不限）', key, 'max_latency_ms', p.max_latency_ms) +
-      field('DNS 下发数量（只下发最快的 N 个；0/空=全部）', key, 'top_n', p.top_n) +
       field('自动拉取网段（cloudfront / cloudflare，留空=关闭）', key, 'auto_targets', p.auto_targets) +
       '</div><label class="switch"><input type="checkbox" data-k="'+key+'" data-f="ping" '+
       (p.ping?'checked':'')+'> 启用 ICMP 预筛选</label></div>';
@@ -646,6 +650,64 @@ function renderDns(cfg){
     });
   });
 }
+/* 下发筛选：只影响「写进 DNS 的那一批」，结果文件仍保留全部可用 IP。
+   为什么放在 DNS 面板而不是「平台设置」：用户找的是「前多少下发到 DNS」，
+   放在这里才看得见；同时它仍然是逐平台（运营商变体）各自生效的。 */
+function renderDnsFilters(cfg){
+  const box = document.getElementById('dns-filters');
+  if (!box) return;
+  const dnsMap = cfg.dns || {};
+  const platMap = cfg.platforms || {};
+  // 先列已经配了 DNS 的平台，再补上平台设置里出现过的（避免以后加了平台却没有下发筛选入口）
+  let keys = Object.keys(dnsMap);
+  Object.keys(platMap).forEach(k=>{ if (!keys.includes(k)) keys.push(k); });
+  if (!keys.length){
+    box.innerHTML = '<div class="hint">还没有平台：先在「平台设置」里填好校验域名。</div>';
+    return;
+  }
+  const gMs = Number(cfg.max_latency_ms || 0);
+  const gTop = Number(cfg.top_n || 0);
+  let html = '';
+  keys.forEach(k=>{
+    const p = platMap[k] || {};
+    const d = dnsMap[k] || {};
+    const ms = (p.max_latency_ms === null || p.max_latency_ms === undefined || p.max_latency_ms === '')
+      ? '' : p.max_latency_ms;
+    const top = (p.top_n === null || p.top_n === undefined || p.top_n === '')
+      ? '' : p.top_n;
+    const msText = ms === '' ? (gMs > 0 ? gMs + 'ms（全局默认）' : '不限') : ms + 'ms';
+    const topText = top === '' ? (gTop > 0 ? gTop + ' 个（全局默认）' : '全部') : top + ' 个';
+    html += '<div class="grid3" style="margin-bottom:8px">'+
+      '<div class="field"><label>'+esc(k.toUpperCase())+' 延迟上限（ms，超过不下发）</label>'+
+      '<input type="number" min="0" step="1" data-pk="'+esc(k)+'" data-pf="max_latency_ms" value="'+esc(ms)+
+      '" placeholder="0/空=不限"></div>'+
+      '<div class="field"><label>'+esc(k.toUpperCase())+' 下发数量（只发最快的 N 个）</label>'+
+      '<input type="number" min="0" step="1" data-pk="'+esc(k)+'" data-pf="top_n" value="'+esc(top)+
+      '" placeholder="0/空=全部"></div>'+
+      '<div class="field"><label>'+esc(k.toUpperCase())+' 当前生效'+
+      (d.record_name?' · '+esc(d.record_name):' · '+(dnsMap[k]?'未填记录名':'未配置 DNS'))+
+      '</label><div class="hint" style="margin:8px 0 0">延迟 ≤ '+esc(msText)+' ，下发 '+esc(topText)+'</div></div>'+
+      '</div>';
+  });
+  box.innerHTML = html;
+}
+function collectDnsFilterPatch(){
+  const patch = {};
+  document.querySelectorAll('#dns-filters input[data-pk]').forEach(el=>{
+    const k = el.dataset.pk, f = el.dataset.pf;
+    patch[k] = patch[k] || {};
+    const raw = el.value.trim();
+    // 空 = 清掉本平台覆盖，回落到全局默认（后端把空值转成 None）
+    patch[k][f] = raw === '' ? '' : Number(raw);
+  });
+  return patch;
+}
+function mergePlatformsPatch(base, extra){
+  const out = {};
+  Object.keys(base||{}).forEach(k=>{ out[k] = Object.assign({}, base[k]); });
+  Object.keys(extra||{}).forEach(k=>{ out[k] = Object.assign({}, out[k]||{}, extra[k]); });
+  return out;
+}
 function sel(label, key, name, value, options){
   let opts = options.map(([v,t])=>'<option value="'+v+'"'+(v===value?' selected':'')+'>'+esc(t)+'</option>').join('');
   return '<div class="field"><label>'+esc(label)+'</label>'+
@@ -684,7 +746,7 @@ async function saveAll(){
       platform_order: document.getElementById('c-seqplatforms').checked ? 'sequential' : 'parallel',
     dns_mode: document.getElementById('d-dnsmode').value,
     dns_confirm: document.getElementById('d-dnsconfirm').checked,
-    platforms: collectPlatformsPatch(),
+    platforms: mergePlatformsPatch(collectPlatformsPatch(), collectDnsFilterPatch()),
     dns: collectDnsPatch()
   };
   const data = await post('/api/config', patch);
@@ -703,8 +765,12 @@ function bind(){
   document.getElementById('btn-once').onclick = async ()=>{
     saveAll().catch(()=>{});
     const r = await post('/api/control/run-once'); toast(r.message, r.ok?'ok':'err'); refresh(); };
+  // 下发前先保存：否则刚填的「下发数量 / 延迟上限」还没生效，
+  // 用户点完下发会以为设置没起作用（这两个值只在服务端读配置时才用得上）。
   document.getElementById('btn-preview').onclick = async ()=>{
-    const r = await post('/api/control/dns-preview'); toast(r.message, r.ok?'ok':'err'); };
+    try{ await saveAll(); }catch(e){ return; }
+    const r = await post('/api/control/dns-preview');
+    toast(r.message + (r.ok ? '（筛选详情见「实时日志」）' : ''), r.ok?'ok':'err'); };
   document.getElementById('btn-push').onclick = async ()=>{
     if (!document.getElementById('d-dnsconfirm').checked){
       toast('请先勾选「我确认允许修改线上解析」', 'err'); return; }
@@ -713,8 +779,9 @@ function bind(){
     const force = document.getElementById('d-dnsforce').checked;
     if (force && !confirm('已勾选「允许大幅缩容」：本次可能把线上解析砍掉一大半，确定吗？')) return;
     if (!confirm('确定要修改线上 DNS 解析吗？')) return;
+    try{ await saveAll(); }catch(e){ return; }
     const r = await post('/api/control/dns-push', {force: force});
-    toast(r.message, r.ok?'ok':'err'); };
+    toast(r.message + (r.ok ? '（筛选详情见「实时日志」）' : ''), r.ok?'ok':'err'); };
   document.getElementById('btn-clear').onclick = async ()=>{
     await post('/api/logs/clear');
     document.getElementById('log').innerHTML=''; LOG_CURSOR=0; toast('日志已清空'); };
