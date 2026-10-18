@@ -183,6 +183,34 @@ must_have = {
 for label, needle in must_have.items():
     check(f"{label} 已接线", needle in js, needle)
 
+# ---------------------------------------------------------------- 6. 容错
+print()
+print("6) 容错：首屏失败要能自愈、日志不能重复显示")
+# 回归：原来启动函数里是 catch(e){ return; }，一次首屏失败就再也不会设置
+# 轮询，页面永久空白，只能手动刷新。
+check("首屏加载失败后仍然设置了轮询",
+      "setInterval(pollLogs" in js and "setInterval(refresh" in js,
+      "有轮询")
+check("首屏失败不再是直接 return 跳过初始化",
+      "await loadAll();\n  }catch(e){ return; }" not in js,
+      "已改为继续初始化并提示重试")
+check("refresh() 会在配置缺失时补拉配置",
+      "if (!CONFIG || !STATE)" in js, "有自愈逻辑")
+check("超时/失败有提示",
+      "正在自动重试" in js, "有 toast 提示")
+
+# 日志去重：SSE 与轮询两条来源共用同一个去重入口
+check("日志写入统一走去重函数 addLogOnce", "function addLogOnce" in js, "已定义")
+check("SSE 的日志事件走 addLogOnce",
+      re.search(r"addEventListener\('log',\s*ev=>\{\s*addLogOnce\(", js) is not None,
+      "已接入")
+check("轮询的日志也走 addLogOnce",
+      "data.logs||[]).forEach(it=>{ addLogOnce(it);" in js.replace("\n", "") or
+      "addLogOnce(it)" in js, "已接入")
+check("没有其他地方直接调用 addLog（绕过去重）",
+      len(re.findall(r"(?<!function )addLog\(", js)) <= 2,
+      f"{len(re.findall(r'(?<!function )addLog\(', js))} 处直接调用")
+
 print()
 print("=" * 70)
 if _failures:

@@ -342,12 +342,22 @@ function addLog(item){
   if (AUTOSCROLL) box.scrollTop = box.scrollHeight;
   document.getElementById('p-logcount').textContent = box.childElementCount + ' / ' + CONFIG_MAX_LOGS();
 }
+/* 日志有两个来源：SSE 实时推送 + 每 2 秒的轮询补偿。两者会同时到达同一批
+   序号（比如断线重连那一下），直接 addLog 就会出现重复行。按 seq 去重：
+   已经显示过的序号一律跳过，同时推进游标。 */
+function addLogOnce(item){
+  if (item && typeof item.seq === 'number'){
+    if (item.seq <= LOG_CURSOR) return;
+    LOG_CURSOR = item.seq;
+  }
+  addLog(item);
+}
 function CONFIG_MAX_LOGS(){ return (CONFIG && CONFIG.log_buffer) || 500; }
 
 async function pollLogs(){
   try{
     const data = await api('/api/logs?after=' + LOG_CURSOR + '&limit=500');
-    (data.logs||[]).forEach(it=>{ addLog(it); LOG_CURSOR = it.seq; });
+    (data.logs||[]).forEach(it=>{ addLogOnce(it); });
     if (data.capacity) document.getElementById('p-logcount').textContent =
       document.getElementById('log').childElementCount + ' / ' + data.capacity;
   }catch(e){}
@@ -697,19 +707,28 @@ async function loadAll(){
   await loadVars();
 }
 async function refresh(){
+  // 首次加载失败过就趁机补上：否则页面会一直停在空白状态，
+  // 只能靠用户手动刷新 —— 换个网络、服务刚重启时很容易碰到。
+  if (!CONFIG || !STATE){
+    try{ await loadAll(); return; }catch(e){ return; }
+  }
   try{ renderStatus(await api('/api/status')); }catch(e){}
 }
 
 /* ---------------- 启动 ---------------- */
 (async function(){
   bind();
+  // 首屏失败也要继续往下走：后面每 3 秒的 refresh() 会自动把配置补回来。
+  // 原来这里是 catch(e){ return; }，一次失败就再也不会轮询，页面永久空白。
   try{
     await loadAll();
-  }catch(e){ return; }
+  }catch(e){
+    toast('首次加载失败，正在自动重试…', 'err');
+  }
   // SSE 实时推送；失败自动退化为轮询
   try{
     const es = new EventSource(q('/api/events'));
-    es.addEventListener('log', ev=>{ const it = JSON.parse(ev.data); addLog(it); LOG_CURSOR = it.seq; });
+    es.addEventListener('log', ev=>{ addLogOnce(JSON.parse(ev.data)); });
     es.addEventListener('progress', ev=>{
       if (STATE){ STATE.progress = JSON.parse(ev.data); renderStatus(STATE); } });
     es.addEventListener('runner', ev=>{ if (STATE){ STATE.runner = JSON.parse(ev.data); renderStatus(STATE); } });
