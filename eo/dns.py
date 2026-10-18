@@ -480,6 +480,11 @@ def sync_records(
     batches = [ips[i:i + target.batch_size] for i in range(0, len(ips), target.batch_size)]
     log(f"  现有 {len(existing)} 个记录集/{len(old_ips)} 个 IP，本次需 {len(batches)} 个记录集")
 
+    # 说明：华为云【允许】同一主机名下存在多条同类型记录集 ——
+    # 线上实际就是 eo-lt.1.060730.xyz 下 11 条记录集 / 530 个 IP（见 README）。
+    # 所以这里的批次数超过现有记录集数时，多出来的部分就是正常的新建，
+    # 不要在此处加"同名只能有一条"之类的拦截（曾经加过，会直接废掉这个功能）。
+
     # 步骤 1：就地更新已有记录集（无空窗期）
     for index, batch in enumerate(batches):
         if index < len(existing):

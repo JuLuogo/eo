@@ -142,7 +142,7 @@ check("拒绝下发", r.ok is False, r.summary()[:60])
 check("错误信息里说明 IP 列表为空", "为空" in r.summary(), r.summary()[:60])
 
 print()
-print("4) 超过 50 个 IP：必须按 batch_size 分批")
+print("4) 超过 50 个 IP：按 batch_size 分批（每批不超过 50）")
 # --------------------------------------------------------------------------
 client = FakeClient()
 ips = [f"10.0.{i // 250}.{i % 250 + 1}" for i in range(137)]
@@ -217,6 +217,31 @@ check("创建失败时整体判失败", r.ok is False, r.summary()[:60])
 check("创建失败时不删除旧记录集", not client.deletes, str(client.deletes))
 check("第 1 批确实更新了（就地更新不浪费）", len(client.updates) == 1,
       f"{len(client.updates)} 次更新")
+
+print()
+print("11) 同一主机名下允许多条记录集（回归：线上实际 11 条 / 530 个 IP）")
+# --------------------------------------------------------------------------
+# 曾经有人（我）按「华为云同名记录集只能有一条」加了拦截，
+# 结果会直接把线上正在用的布局判成非法。README 里记着真实情况：
+#   eo-lt.1.060730.xyz 现有 11 个记录集 / 530 个 IP
+# 这里用 11 条现有记录集 + 530 个 IP 精确复现那个布局。
+client = FakeClient(existing_sets=sets_of(11, 50))
+ips_530 = [f"10.{i // 250}.{i % 250}.{j}" for i in range(11) for j in range(1, 49)]
+ips_530 = ips_530[:530]
+r = sync_records(target(), ips_530, log=lambda *_: None, client=client)
+check("530 个 IP / 11 条记录集：全部就地更新成功", r.ok is True, r.summary()[:80])
+check("11 条都更新了", r.updated_batches == 11, str(r.updated_batches))
+check("没有多余新建", r.created_batches == 0, str(r.created_batches))
+
+# 再验证「比现有更多」时是新建而不是报错
+client = FakeClient(existing_sets=sets_of(1, 50))
+r = sync_records(target(), [f"10.7.{i // 250}.{i % 250 + 1}" for i in range(120)],
+                 log=lambda *_: None, client=client)
+check("现有 1 条、本次需 3 条 -> 1 更新 + 2 新建",
+      r.ok is True and r.updated_batches == 1 and r.created_batches == 2,
+      f"更新 {r.updated_batches} 新建 {r.created_batches}")
+check("新建用的确实是同一个主机名（华为云允许）",
+      len(client.creates) == 2, str(len(client.creates)))
 
 print()
 print("=" * 70)
