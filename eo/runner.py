@@ -211,6 +211,21 @@ def run_once(
             emit({"type": "log", "line": f"  {'[+]' if probe.ok else '[-]'} "
                                         f"{platform.name} {probe.ip} {flag}"})
 
+    # 扫描前按需自动刷新网段（网页上「自动拉取网段」那个设置）。
+    # 放在这里而不是构造平台时：CLI 与网页两条路径共用 run_once，
+    # 且刷新失败只会打一行警告，不会中断本轮。
+    if any(getattr(p, "auto_targets", "") for p in platforms):
+        from .ranges import auto_refresh
+        for platform in platforms:
+            if not getattr(platform, "auto_targets", ""):
+                continue
+            try:
+                note = auto_refresh(platform, log=log)
+            except Exception as exc:                      # noqa: BLE001
+                note = f"⚠ 自动拉取网段异常（{type(exc).__name__}: {exc}），本轮继续用现有文件"
+            if note:
+                log(f"[{platform.name}] {note}")
+
     outcomes = scan_platforms(platforms, targets=targets, log=log, quiet=True,
                               limiter=limiter, stop_event=stop_event,
                               on_result=on_result, on_plan=on_plan)

@@ -568,7 +568,7 @@ function renderPlatforms(cfg){
       field('粗扫抽样（每 /24 取几个 IP，留空=默认）', key, 'sample_per_24', p.sample_per_24) +
       field('延迟上限（ms，超过就丢弃；0/空=不限）', key, 'max_latency_ms', p.max_latency_ms) +
       field('只保留最快 N 个（0/空=全部保留）', key, 'top_n', p.top_n) +
-      field('自动拉取网段（cloudfront 等）', key, 'auto_targets', p.auto_targets) +
+      field('自动拉取网段（cloudfront / cloudflare，留空=关闭）', key, 'auto_targets', p.auto_targets) +
       '</div><label class="switch"><input type="checkbox" data-k="'+key+'" data-f="ping" '+
       (p.ping?'checked':'')+'> 启用 ICMP 预筛选</label></div>';
     box.appendChild(d);

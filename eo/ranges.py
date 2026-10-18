@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
@@ -49,6 +50,46 @@ FETCHERS: dict[str, Callable[..., list[str]]] = {
     "cloudfront": fetch_cloudfront,
     "cloudflare": fetch_cloudflare,
 }
+
+
+def auto_refresh(platform, log: Callable[[str], None] = print,
+                 min_age_hours: float | None = None) -> str:
+    """按平台的「自动拉取网段」设置刷新它的网段文件，返回说明（无需刷新时返回空串）。
+
+    设计上的几个约束，都是为了"不要因为一次网络问题把扫描搞坏"：
+      * 只在文件不存在、或旧于 min_age_hours 时才拉取 —— 否则每轮都请求一次，
+        间隔 300 秒的话一天就是 288 次；
+      * 拉取失败/返回空 -> 保留原文件，只在日志里说一声，继续用旧网段扫；
+      * 写入是原子的（update_targets_file 内部），扫描同时读不会看到半截。
+    """
+    key = (getattr(platform, "auto_targets", "") or "").strip().lower()
+    if not key:
+        return ""
+    if key not in SOURCES:
+        return (f"⚠ 自动拉取源 {key!r} 不认识（可选: {', '.join(SOURCES)}），"
+                f"本轮继续用现有网段文件")
+
+    path = Path(platform.targets_file or "")
+    if not str(path):
+        return "⚠ 未配置网段文件路径，无法自动拉取"
+
+    if min_age_hours is None:
+        try:
+            min_age_hours = float(os.environ.get("EO_TARGETS_REFRESH_HOURS", "24") or 24)
+        except ValueError:
+            min_age_hours = 24.0
+
+    if path.exists() and min_age_hours > 0:
+        age_hours = (time.time() - path.stat().st_mtime) / 3600.0
+        if age_hours < min_age_hours:
+            return ""            # 还新鲜，不用拉
+
+    try:
+        count = update_targets_file(key, path, log=lambda _m: None)
+    except Exception as exc:                                 # noqa: BLE001
+        return (f"⚠ 自动拉取 {key} 失败（{type(exc).__name__}: {exc}），"
+                f"本轮继续用现有网段文件")
+    return f"网段已自动更新：{key} -> {path}（{count} 个网段）"
 
 
 def fetch(key: str, timeout: float = 30.0) -> list[str]:

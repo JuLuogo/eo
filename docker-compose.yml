@@ -80,6 +80,7 @@ services:
       # ---- 进阶开关（留空即用内置默认，一般不用动）----
       EO_PROBE: "${EO_PROBE:-}"           # 留空=进程内探测；curl=退回旧实现做对照
       EO_DEEP_MAX_NETWORKS: "${EO_DEEP_MAX_NETWORKS:-1024}"  # 深扫最多覆盖多少个 /24
+      EO_TARGETS_REFRESH_HOURS: "${EO_TARGETS_REFRESH_HOURS:-24}"  # 网段文件多久算旧（小时）
       EO_WEB_SOCKET_TIMEOUT: "${EO_WEB_SOCKET_TIMEOUT:-30}"  # 网页连接的 socket 超时秒数
       EO_SEED_TARGETS: "${EO_SEED_TARGETS:-1}"      # 1=挂载目录缺网段文件时自动补
       EO_WEBHOOK: "${EO_WEBHOOK:-}"

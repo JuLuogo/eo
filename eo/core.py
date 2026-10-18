@@ -814,6 +814,9 @@ class Platform:
     max_latency_ms: float = 0.0
     # 只保留最快的 N 个节点；0 = 全部保留
     top_n: int = 0
+    # 每轮扫描前自动拉取网段（cloudfront / cloudflare）；留空 = 关闭。
+    # 见 ranges.auto_refresh：文件还新鲜时不重复拉取，失败也不影响本轮扫描。
+    auto_targets: str = ""
     targets_file: str = ""        # 该平台的网段文件（相对项目根目录）
     output_file: str = ""         # 结果落盘文件
     history_file: str = ""        # 历史记录(jsonl)，用于持续监控

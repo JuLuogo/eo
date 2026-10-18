@@ -23,7 +23,8 @@ PUBLIC_IP_APIS = [
     "http://members.3322.org/dyndns/getip",
 ]
 
-# 运营商 ASN 归属（不含中立交换中心），与 eo/isptool.py 保持一致
+# 运营商 ASN 归属（不含中立交换中心）。
+# 这是仓库里唯一一份运营商判定表；关键词与 ASN 都改在这里，别处不要再抄一份。
 ASN_CARRIER = {
     4134: "dx", 4809: "dx", 4812: "dx", 4811: "dx", 4816: "dx", 23724: "dx",
     58466: "dx", 140061: "dx",
@@ -33,6 +34,16 @@ ASN_CARRIER = {
     56048: "yd", 24400: "yd", 132525: "yd",
 }
 LABELS = {"lt": "联通", "dx": "电信", "yd": "移动", "unknown": "未知"}
+
+# 归属名称关键词。必须同时包含中英文：
+# 查询带了 lang=zh-CN，ip-api 有可能返回「中国联通」这类中文名，
+# 只认英文关键词时就会匹配不上，只能退到 ASN；ASN 再不在表里就"无法判定"，
+# 于是 deploy.sh isp 没法自动配置，用户得手填。
+NAME_KEYWORDS = {
+    "lt": ("unicom", "china169", "netcom", "联通", "网通"),
+    "dx": ("chinanet", "chinatelecom", "china telecom", "电信", "ctc"),
+    "yd": ("cmnet", "chinamobile", "china mobile", "移动", "铁通", "tietong"),
+}
 
 
 # --------------------------------------------------------------------------
@@ -77,22 +88,22 @@ def detect(ip: str = "", timeout: float = 8.0) -> dict:
     info["isp"], info["asn"] = holder, as_text
     lowered = f"{holder} {as_text}".lower()
 
-    # 1) 归属名称关键词
-    if any(w in lowered for w in ("unicom", "china169", "netcom")):
-        info.update(carrier="lt", label=LABELS["lt"], reason="归属名称含联通特征")
-    elif any(w in lowered for w in ("chinanet", "chinatelecom", "china telecom")):
-        info.update(carrier="dx", label=LABELS["dx"], reason="归属名称含电信特征")
-    elif any(w in lowered for w in ("cmnet", "chinamobile", "china mobile")):
-        info.update(carrier="yd", label=LABELS["yd"], reason="归属名称含移动特征")
-    else:
-        # 2) ASN 归属
-        match = re.match(r"AS(\d+)", as_text.strip(), flags=re.I)
-        if match and int(match.group(1)) in ASN_CARRIER:
-            carrier = ASN_CARRIER[int(match.group(1))]
+    # 1) 归属名称关键词（中英文都认）
+    for carrier, words in NAME_KEYWORDS.items():
+        hit = next((w for w in words if w in lowered), "")
+        if hit:
             info.update(carrier=carrier, label=LABELS[carrier],
-                        reason=f"AS{match.group(1)} 属于{LABELS[carrier]}")
-        else:
-            info["reason"] = f"无法判定（ISP={holder or '未知'}, AS={as_text or '未知'}）"
+                        reason=f"归属名称含{LABELS[carrier]}特征（{hit}）")
+            return info
+
+    # 2) ASN 归属
+    match = re.match(r"AS(\d+)", as_text.strip(), flags=re.I)
+    if match and int(match.group(1)) in ASN_CARRIER:
+        carrier = ASN_CARRIER[int(match.group(1))]
+        info.update(carrier=carrier, label=LABELS[carrier],
+                    reason=f"AS{match.group(1)} 属于{LABELS[carrier]}")
+    else:
+        info["reason"] = f"无法判定（ISP={holder or '未知'}, AS={as_text or '未知'}）"
     return info
 
 

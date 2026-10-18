@@ -171,6 +171,7 @@ class OptimizerService:
                          (cfg.workers or base.workers)),
                 sample_per_24=(override.sample_per_24 if override and override.sample_per_24
                                else base.sample_per_24),
+                auto_targets=(override.auto_targets if override else ""),
                 max_latency_ms=(override.max_latency_ms if override
                                 and override.max_latency_ms is not None
                                 else cfg.max_latency_ms),
