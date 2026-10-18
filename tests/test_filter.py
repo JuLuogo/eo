@@ -78,59 +78,39 @@ check("按延迟升序", [p.latency_ms for p in out.passed] == sorted(p.latency_
 
 # --------------------------------------------------------------------------
 print()
-print("2) 延迟门槛：超过 60ms 的丢弃")
+print("2) 门槛与「取前 N」已移到 DNS 下发侧：结果文件必须保留全部")
 # --------------------------------------------------------------------------
+# 需求变更（用户明确要求）：结果文件留全部可用 IP，方便人工核对与回溯；
+# 门槛与数量只决定往 DNS 上写哪些。所以这两个设置不该再影响 scan_platform。
+# DNS 侧的行为由 tests/test_dns_selection.py 覆盖。
+for label, over in (("设了门槛", {"max_latency_ms": 60}),
+                    ("设了数量", {"top_n": 3}),
+                    ("两个都设", {"max_latency_ms": 80, "top_n": 2})):
+    try:
+        fake, _ = patch_probes(table)
+        core.http_probe = fake
+        out = core.scan_platform(make_platform(**over), targets=list(table), quiet=True)
+    finally:
+        core.http_probe = real_probe
+    check(f"{label}时结果仍保留全部 10 个", len(out.passed) == 10, str(len(out.passed)))
+
 try:
     fake, _ = patch_probes(table)
     core.http_probe = fake
     logs: list[str] = []
-    out = core.scan_platform(make_platform(max_latency_ms=60),
+    out = core.scan_platform(make_platform(max_latency_ms=60, top_n=3),
                              targets=list(table), quiet=False, log=logs.append)
 finally:
     core.http_probe = real_probe
-check("只剩 <=60ms 的 6 个", len(out.passed) == 6, str(len(out.passed)))
-check("留下来的都不超过门槛", all(p.latency_ms <= 60 for p in out.passed),
+check("仍然按延迟升序（方便 DNS 侧直接取前 N）",
+      [p.latency_ms for p in out.passed] == sorted(p.latency_ms for p in out.passed),
       str([p.latency_ms for p in out.passed]))
-check("日志说明了丢弃数量", any("丢弃延迟" in line for line in logs),
-      str([l for l in logs if "丢弃延迟" in l]))
+check("扫描日志里不再出现「丢弃延迟」", not any("丢弃延迟" in l for l in logs),
+      str([l for l in logs if "丢弃" in l]))
 
 # --------------------------------------------------------------------------
 print()
-print("3) 只保留最快的 N 个")
-# --------------------------------------------------------------------------
-try:
-    fake, _ = patch_probes(table)
-    core.http_probe = fake
-    logs = []
-    out = core.scan_platform(make_platform(top_n=3),
-                             targets=list(table), quiet=False, log=logs.append)
-finally:
-    core.http_probe = real_probe
-check("只留 3 个", len(out.passed) == 3, str(len(out.passed)))
-check("留下的确实是最快的三个",
-      [p.ip for p in out.passed] == ["192.0.2.1", "192.0.2.2", "192.0.2.3"],
-      str([p.ip for p in out.passed]))
-check("日志说明了只保留 N 个", any("只保留最快 3 个" in line for line in logs),
-      str([l for l in logs if "只保留" in l]))
-
-# --------------------------------------------------------------------------
-print()
-print("4) 门槛 + 前 N 同时生效（先按门槛丢，再取前 N）")
-# --------------------------------------------------------------------------
-try:
-    fake, _ = patch_probes(table)
-    core.http_probe = fake
-    out = core.scan_platform(make_platform(max_latency_ms=80, top_n=2),
-                             targets=list(table), quiet=True)
-finally:
-    core.http_probe = real_probe
-check("先丢弃 >80ms 的，再取最快 2 个",
-      [p.ip for p in out.passed] == ["192.0.2.1", "192.0.2.2"],
-      str([p.ip for p in out.passed]))
-
-# --------------------------------------------------------------------------
-print()
-print("5) 稳定性排序：同样延迟时，重试过的排后面")
+print("3) 稳定性排序：同样延迟时，重试过的排后面")
 # --------------------------------------------------------------------------
 # 三个 IP 延迟相同；.11 第一次失败重试才成功（attempts=2）
 table2 = {"192.0.2.11": (20.0, True, 1),
@@ -155,7 +135,7 @@ check("一次就成功的 attempts=1",
 
 # --------------------------------------------------------------------------
 print()
-print("6) RunConfig.apply_to 能把参数传到平台")
+print("4) RunConfig.apply_to 能把参数传到平台")
 # --------------------------------------------------------------------------
 plat = make_platform(top_n=0, max_latency_ms=0.0)
 cfg = RunConfig(max_latency_ms=150.0, top_n=5)
@@ -165,7 +145,7 @@ check("top_n 已应用", plat.top_n == 5, str(plat.top_n))
 
 # --------------------------------------------------------------------------
 print()
-print("7) 环境变量 EO_MAX_MS / EO_TOP 生效（命令行参数优先）")
+print("5) 环境变量 EO_MAX_MS / EO_TOP 生效（命令行参数优先）")
 # --------------------------------------------------------------------------
 import os                                                    # noqa: E402
 

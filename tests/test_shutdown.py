@@ -299,7 +299,7 @@ probes = [Probe(ip="203.0.113.1", latency_ms=12.0), Probe(ip="203.0.113.2", late
 
 write_result(target, probes)
 check("正常写入内容正确",
-      target.read_text("utf-8") == "203.0.113.1\n203.0.113.2", target.read_text("utf-8"))
+      target.read_text("utf-8") == "203.0.113.1\t12ms\n203.0.113.2\t9ms", target.read_text("utf-8"))
 check("不留下临时文件", not list(target.parent.glob("*.tmp")),
       str([p.name for p in target.parent.glob("*.tmp")]))
 
@@ -320,7 +320,7 @@ try:
 finally:
     Path.replace = original_replace                             # type: ignore[assignment]
 check("中断后旧结果文件完好（没有被写坏）",
-      target.read_text("utf-8") == "203.0.113.1\n203.0.113.2", target.read_text("utf-8"))
+      target.read_text("utf-8") == "203.0.113.1\t12ms\n203.0.113.2\t9ms", target.read_text("utf-8"))
 
 # 带延迟的格式也要原子
 write_result(target, probes, with_latency=True)

@@ -559,20 +559,75 @@ def inspect(target: DnsTarget, log: Log | None = None, client=None) -> DnsUpdate
     return result
 
 
+def _select_for_dns(platform, entries: list[tuple[str, float | None]],
+                    log: Log) -> list[str]:
+    """从结果文件的全部可用 IP 里挑出要下发的那一批。
+
+    结果文件保留全部可用 IP（按延迟升序），这里按平台设置做两步：
+      1. 丢弃延迟超过 max_latency_ms 的（0 = 不设门槛）
+      2. 只保留最快的 top_n 个（0 = 全部保留）
+
+    这两项只影响 DNS 下发，不动结果文件 —— 文件留着可以人工核对与回溯。
+    自动下发（一轮结束后）与手动下发（update_dns.py）都经过这里，行为一致。
+    """
+    max_ms = float(getattr(platform, "max_latency_ms", 0) or 0)
+    top_n = int(getattr(platform, "top_n", 0) or 0)
+
+    if not max_ms and not top_n:
+        return [ip for ip, _ms in entries]
+
+    if any(ms is None for _ip, ms in entries):
+        # 旧格式的结果文件（没有延迟列）没法排序筛选，如实说明而不是静默照发
+        log("  ⚠ 结果文件里没有延迟列，无法按门槛/数量筛选，本次下发全部 IP")
+        return [ip for ip, _ms in entries]
+
+    ranked = sorted(entries, key=lambda item: (item[1] if item[1] is not None else 1e9))
+    kept = ranked
+    if max_ms > 0:
+        dropped = [ip for ip, ms in kept if (ms or 0) > max_ms]
+        if dropped:
+            kept = [(ip, ms) for ip, ms in kept if (ms or 0) <= max_ms]
+            log(f"  按门槛筛选：丢弃延迟 > {max_ms:g}ms 的 {len(dropped)} 个，剩 {len(kept)} 个")
+    if top_n > 0 and len(kept) > top_n:
+        log(f"  只下发最快的 {top_n} 个（丢弃 {len(kept) - top_n} 个）")
+        kept = kept[:top_n]
+    return [ip for ip, _ms in kept]
+
+
 def sync_platform(platform, log: Log | None = None, dry_run: bool = False, client=None,
                   force: bool = False) -> DnsUpdateResult:
-    """按平台配置读取结果文件并下发。"""
+    """按平台配置读取结果文件并下发（下发前按门槛与数量筛选）。"""
     log = _logger(log)
     if not platform.dns:
         return DnsUpdateResult(ok=False, errors=[f"{platform.name} 未配置 dns 段"])
     if not platform.output_file or not Path(platform.output_file).exists():
         return DnsUpdateResult(ok=False, errors=[f"结果文件不存在: {platform.output_file}"])
 
-    ips = [line.split("\t")[0].strip()
-           for line in Path(platform.output_file).read_text(encoding="utf-8").splitlines()
-           if line.strip()]
+    entries: list[tuple[str, float | None]] = []
+    for line in Path(platform.output_file).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        ip = parts[0].strip()
+        if not ip:
+            continue
+        ms: float | None = None
+        if len(parts) > 1:
+            digits = "".join(ch for ch in parts[1] if ch.isdigit() or ch == ".")
+            try:
+                ms = float(digits)
+            except ValueError:
+                ms = None
+        entries.append((ip, ms))
+
+    log(f"== {platform.name} -> {DnsTarget.from_dict(platform.dns, platform=platform.key).normalized_name()}"
+        f"（结果文件 {len(entries)} 个 IP）==")
+    ips = _select_for_dns(platform, entries, log)
+    if not ips:
+        return DnsUpdateResult(ok=False, errors=[
+            "按当前门槛筛选后没有剩下任何 IP，拒绝下发（避免把线上解析清空）"])
+
     target = DnsTarget.from_dict(platform.dns, platform=platform.key)
-    log(f"== {platform.name} -> {target.normalized_name()} ({len(ips)} 个 IP) ==")
     return sync_records(target, ips, log=log, client=client, dry_run=dry_run, force=force)
 
 

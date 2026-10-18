@@ -148,7 +148,7 @@ check("sample_per_24 与 deep_scan 可同时生效",
 
 # --------------------------------------------------------------------------
 print()
-print("8) 深扫 + 延迟门槛/取前N 组合（第二轮深扫后仍会筛选）")
+print("8) 深扫 + 门槛/取前N：扫描结果保留全部，筛选发生在 DNS 侧")
 # --------------------------------------------------------------------------
 import eo.core as core                                           # noqa: E402
 
@@ -171,10 +171,21 @@ try:
     outcome = core.scan_platform(plat, targets=None, quiet=True)
 finally:
     core.http_probe = real
-check("深扫范围内筛选生效：只留 3 个", len(outcome.passed) == 3, str(len(outcome.passed)))
-check("留下的都是最快的（1ms/2ms/3ms）",
-      [p.ip for p in outcome.passed] == ["10.1.0.1", "10.1.0.2", "10.1.0.3"],
-      str([p.ip for p in outcome.passed]))
+# 深扫范围内 20 个全部通过 -> 结果保留全部（门槛/数量只管 DNS 下发）
+check("深扫结果保留全部 20 个（不再被门槛/数量截断）", len(outcome.passed) == 20,
+      str(len(outcome.passed)))
+check("仍然是延迟升序（DNS 侧直接取前 N 即可）",
+      [p.ip for p in outcome.passed[:3]] == ["10.1.0.1", "10.1.0.2", "10.1.0.3"],
+      str([p.ip for p in outcome.passed[:3]]))
+
+# DNS 侧筛选对深扫结果同样生效（复用同一个函数）
+from eo.dns import _select_for_dns                                # noqa: E402
+
+entries = [(p.ip, p.latency_ms) for p in outcome.passed]
+kept = _select_for_dns(plat, entries, lambda *_: None)
+check("DNS 侧按门槛 10ms + 前 3 个筛出 3 个", len(kept) == 3, str(kept))
+check("筛出来的正是最快的三个",
+      kept == ["10.1.0.1", "10.1.0.2", "10.1.0.3"], str(kept))
 
 print()
 print("=" * 70)

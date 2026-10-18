@@ -951,9 +951,11 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rate", type=float, metavar="N",
                         help=f"全平台合计 TCP 连接速率上限（连接/秒），默认 {DEFAULT_RATE:g}；0 表示不限速")
     parser.add_argument("--max-ms", type=float, metavar="MS",
-                        help="延迟门槛：超过这个毫秒数（连接耗时）的节点直接丢弃，只留下快的")
+                        help="DNS 下发门槛：延迟超过这个毫秒数的节点不下发"
+                             "（结果文件仍保留全部可用 IP）")
     parser.add_argument("--top", type=int, metavar="N",
-                        help="只保留延迟最低的 N 个节点（结果文件与 DNS 下发都只用这 N 个）")
+                        help="DNS 下发只取延迟最低的 N 个节点"
+                             "（结果文件仍保留全部可用 IP）")
     parser.add_argument("--with-latency", action="store_true", help="结果文件写成 ip<TAB>延迟")
     parser.add_argument("--no-write", action="store_true", help="不写结果文件与历史记录")
     parser.add_argument("--skip-check", action="store_true",

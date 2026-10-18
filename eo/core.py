@@ -439,6 +439,7 @@ class Probe:
     ok: bool = False
     status: str = ""
     connect_ms: float = 0.0
+    tls_ms: float = 0.0        # TLS 握手耗时（仅 https）
     total_ms: float = 0.0
     latency_ms: float = 0.0
     error: str = ""
@@ -491,7 +492,7 @@ def ping(ip: str, timeout_ms: int = 300) -> bool:
 
 
 _WRITE_OUT = re.compile(
-    r"^(?P<code>\d{3})\s+(?P<connect>[\d.]+)\s+(?P<total>[\d.]+)\s*(?P<remote>[0-9a-fA-F:.]*)$"
+    r"^(?P<code>\d{3})\s+(?P<connect>[\d.]+)\s+(?P<appconnect>[\d.]+)\s+(?P<total>[\d.]+)\s*(?P<remote>[0-9a-fA-F:.]*)$"
 )
 
 
@@ -508,7 +509,7 @@ def host_reachable(host: str, timeout: float = 3.0, port: int = 443,
 
     cmd = [
         curl_bin(), "-s", "-o", os.devnull if IS_WINDOWS else "/dev/null",
-        "-w", "%{http_code} %{time_connect} %{time_total} %{remote_ip}",
+        "-w", "%{http_code} %{time_connect} %{time_appconnect} %{time_total} %{remote_ip}",
         "--max-time", f"{timeout:g}",
         "--connect-timeout", f"{timeout:g}",
         "--http1.1", "--insecure", url,
@@ -610,8 +611,10 @@ def _http_probe_socket(
             except ssl.SSLError:                 # pragma: no cover - 取决于 openssl 版本
                 pass
             sock.settimeout(max(0.2, deadline - time.perf_counter()))
+            tls_started = time.perf_counter()
             # server_hostname 就是 SNI：必须用目标域名，否则回源/节点会返回错误
             sock = ctx.wrap_socket(sock, server_hostname=host)
+            result.tls_ms = (time.perf_counter() - tls_started) * 1000
 
         request = (
             f"GET {path or '/'} HTTP/1.1\r\n"
@@ -643,7 +646,15 @@ def _http_probe_socket(
 
         result.status = parts[1]
         result.total_ms = (time.perf_counter() - started) * 1000
-        result.latency_ms = result.connect_ms or result.total_ms
+        # 延迟口径 = TCP 握手 + TLS 握手（http 时没有 TLS，就是 TCP 握手）。
+        #
+        # 为什么不只用 TCP 握手：链路上只要有中间盒/透明代理，TCP 握手会在
+        # **本地**就被应答（实测到 8.8.8.8 的 TCP 握手只要 0.8ms，物理上不可能），
+        # 于是所有节点的"延迟"都变成 0.x ms，排序等于随机。
+        # TLS 握手必须端到端完成，骗不了，所以把它算进来。
+        # 也不直接用 total_ms：那里面含服务端处理时间，会把"离得近但响应慢"的
+        # 节点冤枉掉。
+        result.latency_ms = result.connect_ms + result.tls_ms
 
         if result.remote_ip and result.remote_ip != ip:
             result.ok = False
@@ -693,7 +704,7 @@ def _http_probe_curl(
         "-o", os.devnull if IS_WINDOWS else "/dev/null",
         # 末尾输出真实对端 IP：用于校验请求确实发给了我们要测的那个 IP，
         # 而不是被本机代理 / 透明网关接管（那样所有 IP 都会返回同一个结果）。
-        "-w", "%{http_code} %{time_connect} %{time_total} %{remote_ip}",
+        "-w", "%{http_code} %{time_connect} %{time_appconnect} %{time_total} %{remote_ip}",
         "--resolve", f"{host}:{port}:{ip}",
         "--max-time", f"{timeout:g}",
         "--connect-timeout", f"{timeout:g}",
@@ -740,7 +751,14 @@ def _http_probe_curl(
     result.status = match.group("code")
     result.connect_ms = float(match.group("connect")) * 1000
     result.total_ms = float(match.group("total")) * 1000
-    result.latency_ms = result.connect_ms or result.total_ms
+    # 与进程内实现同一口径：TCP 握手 + TLS 握手
+    # （time_appconnect 是「含 TLS 的累计时间」，减去 time_connect 得到 TLS 那一段）
+    appconnect = match.group("appconnect")
+    if appconnect:
+        result.tls_ms = max(0.0, float(appconnect) * 1000 - result.connect_ms)
+        result.latency_ms = result.connect_ms + result.tls_ms
+    else:
+        result.latency_ms = result.connect_ms or result.total_ms
     result.remote_ip = match.group("remote") or ""
 
     # 校验请求确实落在了目标 IP 上；否则结果不可信（本机代理/透明网关接管）
@@ -1128,24 +1146,10 @@ def scan_platform(
     # 排序：延迟优先，同样延迟时把「重试过的」排后面（稳定性更好）
     passed.sort(key=lambda p: (p.latency_ms or 1e9, p.attempts))
 
-    # 延迟门槛：超过就丢掉（0 = 不设门槛）
-    if getattr(platform, "max_latency_ms", 0) and platform.max_latency_ms > 0:
-        limit_ms = float(platform.max_latency_ms)
-        dropped = [p for p in passed if p.latency_ms > limit_ms]
-        if dropped:
-            passed = [p for p in passed if p.latency_ms <= limit_ms]
-            if not quiet:
-                log(f"[{platform.name}] 丢弃延迟 > {limit_ms:g}ms 的节点 {len(dropped)} 个，"
-                    f"剩 {len(passed)} 个")
-
-    # 只保留最快的 N 个（0 = 全部保留）
-    top_n = int(getattr(platform, "top_n", 0) or 0)
-    if top_n > 0 and len(passed) > top_n:
-        trimmed = passed[:top_n]
-        if not quiet:
-            log(f"[{platform.name}] 只保留最快 {top_n} 个节点"
-                f"（丢弃 {len(passed) - top_n} 个）")
-        passed = trimmed
+    # 注意：这里【不做】延迟门槛丢弃、也不取前 N ——
+    # 结果文件保留全部可用 IP（按延迟排序，方便人工核对与对比），
+    # 「延迟门槛 + 只取前 N」只作用于 DNS 下发（见 dns.sync_platform）。
+    # 所以那两项设置在网页上叫「DNS 下发门槛 / DNS 下发数量」。
 
     error = "已被用户停止（结果不完整）" if stop_event is not None and stop_event.is_set() else ""
     return ScanOutcome(platform, len(targets), passed, total - len(passed),
@@ -1256,16 +1260,20 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = False) -> None:
-    """写入结果文件。默认只写 IP，保持与原 yes.txt 完全兼容。
+def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = True) -> None:
+    """写入结果文件：**全部可用 IP**，按延迟升序，格式 ``IP<TAB>延迟ms``。
 
-    用「临时文件 + 原子替换」写入：这个文件是给 curl --resolve 直接消费的，
-    被中断时留下半截内容会让后续所有解析都指向一个残缺的列表。
+    为什么延迟列始终写：DNS 下发要靠它做「门槛筛选 + 只取前 N」，
+    而结果文件是 DNS 下发的输入（自动路径与 update_dns.py 都读它）。
+    没有延迟列就没法在不下发的那一侧做筛选。
+
+    为什么保留全部 IP：文件是给人看的、也是回溯证据；
+    DNS 上只放最优的一小批（由平台设置里的门槛与数量控制）。
+    两边口径分开，互不影响。
+
+    with_latency 参数保留只为兼容旧调用：现在无论传什么都会写延迟列。
     """
-    if with_latency:
-        lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
-    else:
-        lines = [p.ip for p in probes]
+    lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
     atomic_write_text(path, "\n".join(lines))
 
 

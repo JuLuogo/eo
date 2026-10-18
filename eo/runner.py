@@ -268,9 +268,11 @@ def run_once(
 
         if not config.no_write:
             if outcome.platform.output_file:
-                write_result(Path(outcome.platform.output_file), outcome.passed,
-                             with_latency=config.with_latency)
-                log(f"  结果 -> {outcome.platform.output_file}")
+                # 结果文件写【全部】可用 IP（带延迟列，按延迟升序）；
+                # 「门槛 + 只取前 N」在 DNS 下发那一步才生效（见 dns._select_for_dns）
+                write_result(Path(outcome.platform.output_file), outcome.passed)
+                log(f"  结果 -> {outcome.platform.output_file}"
+                    f"（{len(outcome.passed)} 个可用 IP，按延迟排序）")
             if outcome.platform.history_file:
                 append_history(Path(outcome.platform.history_file), outcome.platform, outcome)
 
