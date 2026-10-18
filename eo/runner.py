@@ -186,27 +186,36 @@ def run_once(
     def push_progress() -> None:
         emit({"type": "progress", **progress})
 
+    # 进度计数是「读-改-写」，而 on_result/on_plan 会被同一个平台的多个探测线程
+    # 并发调用（线程池 8~80 个），`entry["done"] += 1` 执行期间可能被切换掉，
+    # 导致少算（进度条到不了 100%、事件推送频率也不对）。
+    # 只在改计数时加锁，推送事件放在锁外，避免把锁带进 emit 链路。
+    progress_lock = threading.Lock()
+
     started = time.perf_counter()
     push_progress()
 
     def on_plan(platform: Platform, total: int) -> None:
-        entry = progress["platforms"].setdefault(
-            platform.key, {"name": platform.name, "total": 0, "done": 0, "alive": 0})
-        entry["total"] = total
-        progress["total"] = sum(p["total"] for p in progress["platforms"].values())
+        with progress_lock:
+            entry = progress["platforms"].setdefault(
+                platform.key, {"name": platform.name, "total": 0, "done": 0, "alive": 0})
+            entry["total"] = total
+            progress["total"] = sum(p["total"] for p in progress["platforms"].values())
         push_progress()
 
     def on_result(platform: Platform, probe) -> None:
-        entry = progress["platforms"].setdefault(
-            platform.key, {"name": platform.name, "total": 0, "done": 0, "alive": 0})
-        entry["done"] += 1
-        if probe.ok:
-            entry["alive"] += 1
-        progress["done"] = sum(p["done"] for p in progress["platforms"].values())
+        with progress_lock:
+            entry = progress["platforms"].setdefault(
+                platform.key, {"name": platform.name, "total": 0, "done": 0, "alive": 0})
+            entry["done"] += 1
+            if probe.ok:
+                entry["alive"] += 1
+            progress["done"] = sum(p["done"] for p in progress["platforms"].values())
+            done_now = entry["done"]
         # 每 5 个 IP 或命中时推送一次，避免事件过于频繁
-        if probe.ok or entry["done"] % 5 == 0:
+        if probe.ok or done_now % 5 == 0:
             push_progress()
-        if config.verbose and (probe.ok or entry["done"] <= MAX_PER_IP_EVENTS):
+        if config.verbose and (probe.ok or done_now <= MAX_PER_IP_EVENTS):
             flag = "✅" if probe.ok else f"❌ {probe.error or probe.status}"
             emit({"type": "log", "line": f"  {'[+]' if probe.ok else '[-]'} "
                                         f"{platform.name} {probe.ip} {flag}"})

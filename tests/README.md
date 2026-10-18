@@ -63,6 +63,7 @@ pip install pytest && pytest tests/ -v
 | `test_auto_targets.py` | 自动拉取网段：留空关闭、文件新鲜时不重复拉、过期后重新拉、拉取失败/空结果保留旧文件、不认识的数据源明确提示、接线位置正确 | **网页上那个字段不能是死的** |
 | `test_deploy_scripts.py` | 8 个 shell 脚本语法、`--help` 只打印用法不触发安装、git 可执行位、命令位置的未加引号 `rm -rf`、文档/注释引用的文件都存在、入口脚本降权顺序 | **部署脚本不能误伤系统**（`install.sh --help` 曾直接开始安装） |
 | `test_docs_commands.py` | 从 README/INSTALL 抓出全部 `run.py` 命令（46 条）用真实解析器验证；反向检查每个子命令都有文档；关键参数与环境变量都有说明 | **文档里照抄的命令必须能跑** |
+| `test_progress.py` | 2 平台 × 240 IP、64 探测线程并发下，最后一次 progress 的 `done == total == 结果数`，各平台 `alive == done`；同时说明预检调用（链路自检 + 每平台前 3 个 IP）会让探测调用数多于目标数 | **进度不能少算、要到得了 100%** |
 
 另有 `bench_probe.py`（不在 run_all 里，手动跑）：对比进程内探测与 curl 子进程的速度，
 当前是单线程 **13 倍**差距（2330 次/秒 vs 179 次/秒）。
