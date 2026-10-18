@@ -46,6 +46,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_dns_config() -> dict:
+    """取一份默认的 DNS 凭据配置（三个平台走同一个华为云账号，取谁都一样）。
+
+    注意：PLATFORMS 的键是 eo-lt / eo-dx 这类变体，没有 "eo" 这个基础键 ——
+    老代码写的是 PLATFORMS["eo"]，于是单记录模式（-f 文件 --record 记录名）
+    一调用就 KeyError 直接崩掉。这里按变体顺序找一个带 dns 配置的。
+    """
+    for key in ("eo-lt", "eo-dx", "eo-yd", "esa-lt", "cft-lt"):
+        platform = PLATFORMS.get(key)
+        if platform is not None and platform.dns:
+            return platform.dns
+    for platform in PLATFORMS.values():          # 兜底：任何一个带 dns 的
+        if platform.dns:
+            return platform.dns
+    return {}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -65,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 单记录模式（老 updatedns.py 的用法）
     ips_file = Path(args.file) if args.file else ROOT / "yes.txt"
-    eo_dns = PLATFORMS["eo"].dns
+    eo_dns = _default_dns_config()
     record_name = args.record or eo_dns.get("record_name", "")
     if not record_name:
         safe_log("请用 --record 指定记录名")

@@ -432,6 +432,14 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "EdgeOptimizer/1.0"
     service: OptimizerService
 
+    # 单个连接的 socket 超时（秒）。为什么需要：
+    #   浏览器标签页如果在没有正常关闭的情况下失联（笔记本休眠、虚拟机挂起、
+    #   网线被拔），TCP 连接还挂着，但客户端不再读数据 —— 我们每秒都在往 SSE
+    #   里写，一旦发送缓冲区写满，write 就会永久阻塞，那条线程再也回收不了。
+    #   设了超时之后，阻塞的写会在 N 秒后抛 socket.timeout，连接被关掉。
+    #   BaseHTTPRequestHandler 自己也处理 socket.timeout（读请求超时 -> 关连接）。
+    timeout = int(os.environ.get("EO_WEB_SOCKET_TIMEOUT", "30") or 30)
+
     # ---- 工具 ----
     def log_message(self, fmt: str, *args) -> None:      # 静默默认访问日志
         return
@@ -564,7 +572,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         cursor = 0
-        last_beat = time.time()
         try:
             for item in self.service.logs.tail(200):
                 self._sse("log", item)
@@ -577,10 +584,10 @@ class _Handler(BaseHTTPRequestHandler):
                     cursor = item["seq"]
                 self._sse("progress", self.service.progress)
                 self._sse("runner", self.service.runner.snapshot())
-                if time.time() - last_beat > 15:
-                    last_beat = time.time()
+                # 每秒都发东西本身就是心跳；客户端失联时下面的 write 会抛异常
+                # （socket 超时见 _Handler.timeout），从而结束这个线程。
                 time.sleep(1.0)
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
             return
 
     def _sse(self, event: str, data: Any) -> None:

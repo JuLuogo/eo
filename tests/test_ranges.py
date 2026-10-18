@@ -256,6 +256,44 @@ check("默认列表含已知的阿里云 ASN（45102 / 24429）",
       str(sorted(esa_ranges.KNOWN_ALIBABA_ASNS)[:6]))
 print(f"     {sorted(esa_ranges.KNOWN_ALIBABA_ASNS)}")
 
+# ------------------------------------------------------------------ 9. 大陆判定必须按「重叠」而不是「端点」
+print()
+print("9) ChinaFilter：与 CN 段有任何重叠都要剔除")
+# 回归：原来只判断前缀的首尾两个地址是否落在 CN 区间里，于是
+# 「CN 段整段被包在大前缀内部」时会漏判 —— 阿里的大段（/12、/13）里
+# 正好嵌着 APNIC 分给大陆的 /24，这些前缀会被当成非大陆留在网段里。
+import ipaddress   # noqa: E402
+
+_cn = esa_ranges.ChinaFilter([(int(ipaddress.ip_address("10.1.2.0")),
+                               int(ipaddress.ip_address("10.1.2.255")))])
+for prefix, want, why in (
+    ("10.1.2.0/24", True, "与 CN 完全相同"),
+    ("10.1.2.128/25", True, "落在 CN 内部"),
+    ("10.1.0.0/16", True, "CN 被包在里面前缀内部（端点不在 CN 内）"),
+    ("10.0.0.0/8", True, "CN 远远包在里面"),
+    ("10.1.2.0/23", True, "部分重叠"),
+    ("10.1.1.0/24", False, "相邻但不重叠"),
+    ("10.1.3.0/24", False, "相邻但不重叠"),
+):
+    check(f"is_china({prefix}) = {want}", _cn.is_china(prefix) is want, why)
+
+# 区间合并：相邻两段应合并成一段
+_merged = esa_ranges.ChinaFilter([
+    (int(ipaddress.ip_address("10.0.0.0")), int(ipaddress.ip_address("10.0.0.255"))),
+    (int(ipaddress.ip_address("10.0.1.0")), int(ipaddress.ip_address("10.0.1.255"))),
+])
+check("相邻区间被合并", len(_merged) == 1, f"{len(_merged)} 段")
+check("合并后仍能判定内部地址", _merged.contains_ip(int(ipaddress.ip_address("10.0.1.7"))))
+check("合并后不会误判外部地址",
+      not _merged.contains_ip(int(ipaddress.ip_address("10.0.2.1"))))
+
+# 全部被剔除时也要能正常返回
+kept, dropped = esa_ranges.exclude_china(["10.1.2.0/24", "10.1.2.128/25"], _cn,
+                                         log=lambda *_: None)
+check("全部命中时 kept 为空", kept == [], str(kept))
+check("全部命中时 dropped 记录完整", sorted(dropped) == ["10.1.2.0/24", "10.1.2.128/25"],
+      str(dropped))
+
 print()
 print("=" * 70)
 if _failures:

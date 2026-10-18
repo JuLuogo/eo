@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import bisect
 import ipaddress
 import json
 import re
@@ -155,28 +156,29 @@ class ChinaFilter:
             else:
                 merged.append((start, end))
         self.ranges = merged
+        self._starts = [start for start, _ in merged]
 
     def __len__(self) -> int:
         return len(self.ranges)
 
     def contains_ip(self, value: int) -> bool:
-        low, high = 0, len(self.ranges) - 1
-        while low <= high:
-            mid = (low + high) // 2
-            start, end = self.ranges[mid]
-            if value < start:
-                high = mid - 1
-            elif value > end:
-                low = mid + 1
-            else:
-                return True
-        return False
+        index = bisect.bisect_right(self._starts, value) - 1
+        return index >= 0 and value <= self.ranges[index][1]
+
+    def overlaps(self, first: int, last: int) -> bool:
+        """[first, last] 与任一 CN 区间有交集。
+
+        注意不能只看前缀的首尾两个地址：阿里的大段（/12、/13）里常常嵌着
+        APNIC 分给大陆的 /24，两端都不在 CN 区间内，但中间重叠 ——
+        只判断端点会把这些前缀当成"非大陆"留在网段里。
+        """
+        index = bisect.bisect_right(self._starts, last) - 1
+        return index >= 0 and self.ranges[index][1] >= first
 
     def is_china(self, prefix: str) -> bool:
         """与 CN 段有任何重叠即视为中国大陆（保守做法，宁可多剔除）。"""
         network = ipaddress.ip_network(prefix, strict=False)
-        return (self.contains_ip(int(network.network_address))
-                or self.contains_ip(int(network.broadcast_address)))
+        return self.overlaps(int(network.network_address), int(network.broadcast_address))
 
 
 def exclude_china(prefixes: Sequence[str], filter_: ChinaFilter,

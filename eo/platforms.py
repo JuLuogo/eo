@@ -252,9 +252,37 @@ def get_platforms(keys: list[str] | None = None, include_disabled: bool = False,
         explicit = bool(keys)
 
     if keys:
-        unknown = [k for k in keys if k not in PLATFORMS]
+        # 允许写基础 key（eo / esa / cft）——CLI 帮助与文档里一直是这么举例的
+        # （`run.py scan -p eo esa`、`update_dns.py --platform eo esa cft`），
+        # 但平台字典里只有 eo-lt / eo-dx 这类变体，直接用基础 key 会报「未知平台」。
+        # 这里按运营商展开：
+        #   * 指定了 -n/--network  -> 用那几个运营商（-p eo -n dx => eo-dx）
+        #   * 否则                  -> 用本机运营商（EO_NETWORK，缺省 lt）
+        if networks:
+            carriers = [n.strip().lower() for n in networks if str(n).strip()]
+        else:
+            carriers = [(os.environ.get("EO_NETWORK") or DEFAULT_CARRIER).strip().lower()
+                        or DEFAULT_CARRIER]
+
+        expanded: list[str] = []
+        unknown: list[str] = []
+        for raw_key in keys:
+            key = str(raw_key).strip()
+            if not key:
+                continue
+            if key in PLATFORMS:
+                expanded.append(key)
+            elif key in SERVICES:
+                expanded.extend(f"{key}-{c}" for c in carriers)
+            else:
+                unknown.append(key)
         if unknown:
-            raise KeyError(f"未知平台: {', '.join(unknown)}（可选: {', '.join(PLATFORMS)}）")
+            raise KeyError(f"未知平台: {', '.join(unknown)}"
+                           f"（可选: {', '.join(PLATFORMS)}；也可用基础名 "
+                           f"{'/'.join(SERVICES)} 让程序按运营商自动展开）")
+        # 去重并保持顺序
+        seen: set[str] = set()
+        keys = [k for k in expanded if not (k in seen or seen.add(k))]
         selected = [PLATFORMS[k] for k in keys]
     elif networks:
         # 按运营商筛选时以【全部变体】为基础：若先只取"默认启用的平台"
