@@ -308,13 +308,14 @@ def run_once(
 
 
 def _is_suspicious(outcome: ScanOutcome) -> bool:
-    """通过率 >95% 且中位延迟 <5ms 视为「好得不真实」。"""
-    if outcome.total < 50 or not outcome.passed:
-        return False
-    if len(outcome.passed) / outcome.total < 0.95:
-        return False
-    sample = sorted(p.latency_ms for p in outcome.passed)
-    return sample[len(sample) // 2] < 5.0
+    """通过率 >95% 且中位延迟 <5ms 视为「好得不真实」。
+
+    判定逻辑与 update_dns.py 的手动下发路径共用 core.looks_suspicious()，
+    避免同一条规则写两份、改一处忘一处。
+    """
+    from .core import looks_suspicious
+    return bool(looks_suspicious([p.latency_ms for p in outcome.passed],
+                                total=outcome.total))
 
 
 def _report_coverage(results: Sequence[tuple[ScanOutcome, bool]],

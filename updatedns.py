@@ -63,6 +63,37 @@ def _default_dns_config() -> dict:
     return {}
 
 
+def _suspicious_result_file(platform) -> str:
+    """检查某个平台的结果文件是否「好得不真实」，是则返回原因。
+
+    结果文件可能是 `IP` 或 `IP<TAB>延迟ms` 两种格式（--with-latency）。
+    没有延迟列时无法判断延迟，只能靠 IP 数量与通过率 —— 那种情况下
+    本函数返回空串（不阻拦），因为误拦会让人无法下发。
+    """
+    from eo.core import looks_suspicious
+
+    path = Path(platform.output_file or "")
+    if not path.exists():
+        return ""
+    ips: list[str] = []
+    latencies: list[float] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        ips.append(parts[0].strip())
+        if len(parts) > 1:
+            digits = "".join(c for c in parts[1] if c.isdigit() or c == ".")
+            try:
+                latencies.append(float(digits))
+            except ValueError:
+                pass
+    if len(latencies) != len(ips) or not ips:
+        return ""            # 没有完整的延迟信息，不据此拦截
+    return looks_suspicious(latencies, total=len(ips))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -74,6 +105,16 @@ def main(argv: list[str] | None = None) -> int:
         platforms = get_platforms(args.platform)
         failures = 0
         for platform in platforms:
+            # 与自动下发路径保持一致：结果可疑就拒绝下发，除非显式 --force。
+            # 否则手动执行时会把「链路被代理接管」的一批地址推到线上。
+            reason = _suspicious_result_file(platform)
+            if reason and not args.force:
+                safe_log(f"✗ {platform.name} 拒绝下发：{reason}")
+                safe_log("  确认要强行下发请追加 --force；建议先跑 python run.py doctor 检查链路")
+                failures += 1
+                continue
+            if reason:
+                safe_log(f"⚠ {platform.name} 结果可疑，但已指定 --force，继续下发")
             result = sync_platform(platform, dry_run=args.dry_run, force=args.force)
             safe_log(f"  -> {result.summary()}")
             if not result.ok:

@@ -154,6 +154,102 @@ finally:
     updatedns.sync_platform = real_platform                        # type: ignore[assignment]
     updatedns.sync_records = real_records                          # type: ignore[assignment]
 
+# --------------------------------------------------------------------------
+print()
+print("7) 手动下发也要拦住「可疑结果」（与自动路径同一道闸）")
+# --------------------------------------------------------------------------
+# 自动路径（run_once -> _apply_dns）会拒绝下发可疑结果；
+# 手动执行的 update_dns.py 原来没有这道闸，会把被代理接管的那批地址推到线上。
+import tempfile                                                    # noqa: E402
+
+from eo.platforms import PLATFORMS                                 # noqa: E402
+
+tmpdir = Path(tempfile.mkdtemp(prefix="eo-updatedns-"))
+try:
+    out_file = tmpdir / "eo-lt.txt"
+    # 100 个 IP、全部 1ms -> 判定为可疑（好得不真实）
+    out_file.write_text("\n".join(f"203.0.113.{i}\t1ms" for i in range(1, 101)) + "\n",
+                        encoding="utf-8")
+
+    plat = PLATFORMS["eo-lt"]
+    orig_output = plat.output_file
+    orig_dns = plat.dns
+    plat.output_file = str(out_file)
+    plat.dns = dict(orig_dns or {}) or {"provider": "huawei", "zone_name": "1.060730.xyz",
+                                        "record_name": "eo-lt.1.060730.xyz"}
+    try:
+        reason = updatedns._suspicious_result_file(plat)
+        check("可疑结果能被识别", bool(reason), reason[:70])
+        check("原因里说明是链路被接管", "接管" in reason or "代理" in reason, reason[:70])
+
+        # 没带 --force 时必须拒绝，并且不去调用 sync_platform
+        called: list[str] = []
+        real_sync = updatedns.sync_platform
+        updatedns.sync_platform = lambda p, **kw: (called.append(p.key),   # type: ignore
+                                                   DnsUpdateResult(ok=True))[1]
+        try:
+            logs7: list[str] = []
+            rc = updatedns.main(["--dry-run", "-p", "eo-lt"])
+            check("可疑结果被拒绝（退出码 1）", rc == 1, f"rc={rc}")
+            check("拒绝时没有调用 sync_platform", not called, str(called))
+
+            called.clear()
+            rc = updatedns.main(["--dry-run", "--force", "-p", "eo-lt"])
+            check("--force 可以越过", rc == 0 and called == ["eo-lt"], f"rc={rc} called={called}")
+        finally:
+            updatedns.sync_platform = real_sync                    # type: ignore[assignment]
+
+        # 正常结果不该被拦
+        out_file.write_text("\n".join(f"203.0.113.{i}\t28ms" for i in range(1, 101)) + "\n",
+                            encoding="utf-8")
+        check("正常结果不拦", updatedns._suspicious_result_file(plat) == "",
+              repr(updatedns._suspicious_result_file(plat))[:60])
+
+        # 没有延迟列时不拦（信息不足，不能误拦）
+        out_file.write_text("\n".join(f"203.0.113.{i}" for i in range(1, 101)) + "\n",
+                            encoding="utf-8")
+        check("没有延迟信息时不拦", updatedns._suspicious_result_file(plat) == "")
+
+        # 结果文件不存在时不拦（交给 sync_platform 报"结果文件不存在"）
+        plat.output_file = str(tmpdir / "nope.txt")
+        check("结果文件不存在时不拦", updatedns._suspicious_result_file(plat) == "")
+    finally:
+        plat.output_file = orig_output
+        plat.dns = orig_dns
+finally:
+    import shutil                                                  # noqa: E402
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+print()
+print("8) 自动路径与手动路径共用同一套判定")
+# --------------------------------------------------------------------------
+from eo.core import looks_suspicious                               # noqa: E402
+from eo.runner import _is_suspicious                               # noqa: E402
+
+
+class _P:
+    def __init__(self, ms):                                        # noqa: ANN001
+        self.latency_ms = ms
+
+
+class _Outcome:
+    def __init__(self, n_pass, total, ms):                         # noqa: ANN001
+        self.passed = [_P(ms) for _ in range(n_pass)]
+        self.total = total
+
+
+check("runner 与 core 判定一致（可疑）",
+      _is_suspicious(_Outcome(100, 100, 1.0)) is True
+      and bool(looks_suspicious([1.0] * 100, total=100)) is True)
+check("runner 与 core 判定一致（正常）",
+      _is_suspicious(_Outcome(100, 100, 30.0)) is False
+      and bool(looks_suspicious([30.0] * 100, total=100)) is False)
+check("样本不足时都不判可疑",
+      _is_suspicious(_Outcome(10, 10, 1.0)) is False,
+      "10 个样本")
+check("通过率低时都不判可疑",
+      _is_suspicious(_Outcome(50, 100, 1.0)) is False, "50%")
+
 print()
 print("=" * 70)
 if _failures:

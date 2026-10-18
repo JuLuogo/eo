@@ -1214,6 +1214,31 @@ def scan_platforms(
 # --------------------------------------------------------------------------
 # 5. 结果落盘 / 历史记录
 # --------------------------------------------------------------------------
+def looks_suspicious(latencies: Sequence[float], total: int | None = None) -> str:
+    """判断一批探测结果是否「好得不真实」，返回原因（正常时返回空串）。
+
+    典型场景：本机链路被透明代理/运营商缓存接管，任何 IP 都秒回 200。
+    这种结果一旦下发到线上 DNS，会让域名解析到一批根本不通的地址 ——
+    比不下发糟糕得多。所以自动下发路径会据此拒绝下发，
+    手动下发路径（update_dns.py）也应当据此拦一下。
+
+    判定：样本量足够（>=50）且通过率 >=95% 且中位延迟 <5ms。
+    """
+    if not latencies:
+        return ""
+    if total is not None and total >= 50:
+        if len(latencies) / total < 0.95:
+            return ""
+    elif len(latencies) < 50:
+        return ""
+    sample = sorted(latencies)
+    median = sample[len(sample) // 2]
+    if median < 5.0:
+        return (f"通过率异常高且延迟异常低（中位 {median:.1f}ms，样本 {len(latencies)} 个），"
+                f"疑似本机链路被代理接管，该结果不可用于下发 DNS")
+    return ""
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """原子写文本：先写同目录临时文件，再 replace 覆盖目标。
 
