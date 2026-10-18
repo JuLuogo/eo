@@ -14,7 +14,7 @@ import json
 import os
 import secrets
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -71,6 +71,53 @@ def _coerce_platform_field(name: str, raw):
         except (TypeError, ValueError):
             return _DROP
     return raw
+
+
+_APP_FIELD_DEFAULTS: dict | None = None
+
+
+def _app_field_defaults() -> dict:
+    """AppConfig 各字段的默认值，用来推断该字段该是什么类型。
+
+    延迟到首次调用才计算：AppConfig 定义在本模块后面，
+    模块级直接取会 NameError。
+    """
+    global _APP_FIELD_DEFAULTS
+    if _APP_FIELD_DEFAULTS is None:
+        _APP_FIELD_DEFAULTS = {f.name: f.default for f in fields(AppConfig)
+                               if f.default is not MISSING}
+    return _APP_FIELD_DEFAULTS
+
+
+def _coerce_app_field(name: str, raw):
+    """按 AppConfig 字段的默认值类型转换网页传来的值。
+
+    为什么必须做：API 层原来直接 setattr，网页/js 或任何脚本传字符串就会
+    原样存进去。后果不是"显示不对"而是**直接崩**或**行为反转**：
+      * rate="50"  -> make_rate_limiter 里 "50" <= 0 抛 TypeError，扫描起不来
+      * auto_run="false" -> 字符串非空即真值，容器一启动就自己开始扫描
+    而且这个坑会随新字段不断复现（max_latency_ms/top_n 就是这么漏的）。
+    """
+    if name not in _app_field_defaults():
+        return raw
+    default = _app_field_defaults()[name]
+    if isinstance(default, (dict, list, set, tuple)):
+        return raw                                  # 复合类型不动
+    if isinstance(default, bool):
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(default, (int, float)):
+        if raw == "" or raw is None:
+            return _DROP                            # 空 = 保持现有/默认值
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return _DROP                            # 非法值不写入，避免改坏配置
+        return int(value) if isinstance(default, int) else value
+    return str(raw)
+
+
 
 
 @dataclass
@@ -415,7 +462,10 @@ class ConfigStore:
                         "notify_always", "log_buffer", "max_latency_ms", "top_n",
                         "web_auth", "auto_run"):
                 if key in patch and patch[key] is not None:
-                    setattr(config, key, patch[key])
+                    coerced = _coerce_app_field(key, patch[key])
+                    if coerced is _DROP:
+                        continue          # 空值/非法值不写入，保持原值
+                    setattr(config, key, coerced)
                     self.explicit.add(key)
 
             for key, value in (patch.get("platforms") or {}).items():

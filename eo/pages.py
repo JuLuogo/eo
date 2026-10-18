@@ -312,6 +312,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
 const TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('eo_token') || '';
 if (TOKEN) localStorage.setItem('eo_token', TOKEN);
 let LOG_CURSOR = 0, AUTOSCROLL = true, STATE = null, PLAT_CACHE = [], CONFIG = null;
+/* 平台面板里需要按数字提交的字段（漏了也不会存坏 —— 后端会按字段类型转换，
+   但发对类型更清楚，也少一层依赖） */
+const NUMERIC_PLATFORM_FIELDS = ['workers','timeout','retries','sample_per_24',
+                                 'max_latency_ms','top_n'];
 
 function headers(extra){ const h = Object.assign({'Content-Type':'application/json'}, extra||{});
   if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN; return h; }
@@ -591,7 +595,9 @@ function collectPlatformsPatch(){
     if (el.type === 'checkbox') patch[k][f] = el.checked;
     else if (el.tagName === 'SELECT') patch[k][f] = el.value;
     else if (el.value !== '') {
-      patch[k][f] = ['workers','timeout','retries'].includes(f) ? Number(el.value) : el.value;
+      // 数值字段要转成数字再发（后端也会兜一层类型转换，
+      // 这里漏一个字段不致命，但发对类型更清楚）
+      patch[k][f] = NUMERIC_PLATFORM_FIELDS.includes(f) ? Number(el.value) : el.value;
     } else { patch[k][f] = ''; }
   });
   return patch;
