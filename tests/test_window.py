@@ -123,6 +123,32 @@ check("窗口不合法时仍然执行了任务（没有静默停摆）",
       "有 running 事件")
 
 print()
+print("7) 窗口外的一轮要说明「仍计入 --cycles」（否则用户以为跑了 N 轮）")
+# --------------------------------------------------------------------------
+import sys as _sys                                                  # noqa: E402
+
+events7: list[dict] = []
+r7 = CycleRunner(emit=events7.append)
+r7.start(lambda c, s: None, interval=1, cycles=2, window="03:00-03:59")
+deadline7 = time.time() + 25
+while r7.running and time.time() < deadline7:
+    time.sleep(0.3)
+r7.stop()
+lines7 = [e.get("line", "") for e in events7 if e.get("type") == "log"]
+waits7 = [l for l in lines7 if "不在时间窗口" in l]
+check("窗口外产生了等待日志", len(waits7) >= 2, f"{len(waits7)} 条")
+check("等待日志说明了仍计入 --cycles", all("计入 --cycles" in l for l in waits7),
+      str(waits7[:1])[:90])
+check("窗口外也会跑满 cycles（不会干等到窗口开始）", r7.cycle == 2, str(r7.cycle))
+
+# CLI 帮助里也要说清楚
+cli_src = (ROOT / "eo" / "cli.py").read_text(encoding="utf-8")
+check("--cycles 的帮助文本说明了这一点", "窗口外的等待也算一轮" in cli_src,
+      "已说明")
+check("--window 的帮助文本说明了非法写法的处理",
+      "写法无法识别时会被忽略" in cli_src, "已说明")
+
+print()
 print("=" * 70)
 if _failures:
     print(f"时间窗口测试：失败 {len(_failures)} 项")

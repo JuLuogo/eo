@@ -994,9 +994,12 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--yes", action="store_true", help="确认执行 DNS 修改")
     monitor.add_argument("--force", action="store_true", help="忽略「解析量骤降保护」，允许大幅缩容")
     monitor.add_argument("--interval", type=int, default=300, help="轮询间隔秒数（最小 60），默认 300")
-    monitor.add_argument("--cycles", type=int, default=0, help="运行轮数，0 表示无限")
+    monitor.add_argument("--cycles", type=int, default=0,
+                         help="运行轮数，0 表示无限。注意：配合 --window 时，"
+                              "窗口外的等待也算一轮（否则在窗口外启动会干等十几小时）")
     monitor.add_argument("--window", metavar="HH:MM-HH:MM",
-                         help="仅在指定时间窗口内执行（例如 00:00-07:00，支持跨零点）")
+                         help="仅在指定时间窗口内执行（例如 00:00-07:00，支持跨零点）；"
+                              "写法无法识别时会被忽略并全天运行")
     monitor.set_defaults(func=cmd_monitor)
 
     test = subparsers.add_parser("test", help="诊断指定 IP 对某平台的可用性")

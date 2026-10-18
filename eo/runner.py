@@ -505,8 +505,12 @@ class CycleRunner:
                     self._window_warned.add(problem)
                     self._emit({"type": "log", "line": f"⚠ {problem}", "level": "warn"})
                 if window and not in_window(window):
+                    # 窗口外这一轮不扫描，但仍计入 --cycles：否则在窗口外启动
+                    # 一个 `--cycles 10` 的任务会一直等到窗口开始（最长十几小时），
+                    # 对 cron 式的用法反而更糟。这里把语义说清楚，避免误以为跑过。
                     self._emit({"type": "log",
-                                "line": f"[{time.strftime('%H:%M:%S')}] 不在时间窗口 {window} 内，等待"})
+                                "line": f"[{time.strftime('%H:%M:%S')}] 不在时间窗口 "
+                                        f"{window} 内，等待（本次仍计入 --cycles）"})
                 else:
                     self._set_state("running")
                     try:
