@@ -558,13 +558,21 @@ python run.py scan -p esa --host your-esa-domain.example --targets targets/esa.t
 一次运行可以同时为多个平台优选，各平台结果、历史、DNS 记录互不干扰：
 
 ```bash
-python run.py scan -p eo esa cft        # 三个平台并行扫描
+python run.py scan -p eo esa cft        # 依次为三个平台扫描（EO -> ESA -> CFT）
 python run.py monitor -p eo esa         # 持续监控两个平台
 python run.py scan                      # 不带 -p = 全部已启用平台
 ```
 
-* 平台之间是**并行**的（每个平台一个线程池，共用一个全局限速桶），
-  实测 254 个 IP 跑 3 个平台用时 17s，与单平台同量级，**不会线性叠加**；
+* **默认是「逐个平台扫完再下一个」**：当前平台独占全部并发额度，
+  扫完一个接下一个。这样不会出现「某个平台先扫完、它那份并发就闲置」的浪费
+  —— 并行时每个平台的额度是「总量 ÷ 平台数」固定切分的。
+  总时长不会更差，而先扫完的平台结果能更早拿到。
+  日志会写明顺序与额度：
+  ```
+  平台逐个扫描（每个平台最多 24 个并发，扫完一个接下一个）：EdgeOne·联通 -> ESA·联通 -> CloudFront·联通
+  ```
+* 想改回并行（所有平台同时扫，共用一个全局限速桶）：网页「运行设置」取消勾选
+  「平台逐个扫描」，或设 `EO_PLATFORM_ORDER=parallel`；
 * 结果分别写入 `results/<平台>.txt`，历史写入 `results/history/<平台>.jsonl`；
 * 多平台时额外打印「同一 IP 命中几个平台」，方便决定是否复用节点：
 

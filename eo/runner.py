@@ -64,6 +64,14 @@ class RunConfig:
     deep_scan: bool = False           # 深扫：以上一轮命中的 /24 为范围
     max_latency_ms: float | None = None  # 延迟门槛：超过就丢弃（None/0 = 不设）
     top_n: int | None = None             # 只保留最快的 N 个（None/0 = 全部）
+    # 平台扫描顺序：
+    #   sequential（默认）—— 一个平台扫完再扫下一个，每个平台都用满并发上限。
+    #       为什么这样更好：并行时每个平台的并发额度是"总量÷平台数"固定切分的，
+    #       某个平台先跑完，它那份额度就闲置了，剩下的平台仍只能用自己那一份 ——
+    #       如果瓶颈是并发数（而不是全局限速），这部分算力就白扔了。
+    #       逐个扫描时当前平台独占全部额度，总时长不差、单个平台的结果还出来得更早。
+    #   parallel —— 所有平台同时跑（旧行为）。
+    platform_order: str = "sequential"
 
     def apply_to(self, platforms: Iterable[Platform]) -> list[Platform]:
         """把通用覆盖项作用到平台配置上，返回平台列表。"""
@@ -235,7 +243,13 @@ def run_once(
             if note:
                 log(f"[{platform.name}] {note}")
 
+    # 平台扫描顺序：默认逐个平台扫完再下一个（当前平台独占全部并发额度）。
+    # 具体日志由 scan_platforms 打印（那里才知道平台名与并发上限）。
+    sequential = str(getattr(config, "platform_order", "sequential") or "").strip().lower() \
+        != "parallel"
+
     outcomes = scan_platforms(platforms, targets=targets, log=log, quiet=True,
+                              parallel_platforms=not sequential,
                               limiter=limiter, stop_event=stop_event,
                               on_result=on_result, on_plan=on_plan)
 

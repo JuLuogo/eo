@@ -257,6 +257,7 @@ class OptimizerService:
             quiet=True,            # Web 端日志走事件，不重复打印
             verbose=cfg.verbose,
             skip_check=cfg.skip_check,
+            platform_order=cfg.platform_order,
             # 注意：这里刻意不传 max_latency_ms / top_n。
             # build_platforms() 已经把「平台级设置 > 全局设置 > 代码默认」解析好了，
             # 而 runner 里还会再调一次 config.apply_to()，如果这里传了全局值，

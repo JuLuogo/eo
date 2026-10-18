@@ -168,6 +168,71 @@ check("日志说明了改成串行",
       any("串行" in line for line in logs), str(logs[:3]))
 
 print()
+print("8) 平台逐个扫描（默认）：每个平台必须拿满并发，不能按平台数切分")
+# --------------------------------------------------------------------------
+# 用户要的行为：先 EO 扫完、再 ESA、再 CFT，当前平台独占全部并发额度。
+# 并行时额度是"总量÷平台数"固定切分，某个平台先扫完它那份额度就闲置了 ——
+# 如果瓶颈是并发数（而不是全局限速），那部分算力就白扔。
+from eo.runner import RunConfig                                   # noqa: E402
+
+captured.clear()
+core.scan_platform = fake_scan                                    # type: ignore[assignment]
+try:
+    os.environ["EO_MAX_CONCURRENT"] = "9"
+    three = [core.Platform(key=f"q{i}", name=f"Q{i}", host="example.com",
+                           workers=80, enabled=True) for i in range(3)]
+    logs8: list[str] = []
+    core.scan_platforms(three, targets=["192.0.2.1"], log=logs8.append,
+                        parallel_platforms=False)          # 逐平台（runner 会这样传）
+finally:
+    core.scan_platform = original                                  # type: ignore[assignment]
+    os.environ.pop("EO_MAX_CONCURRENT", None)
+check("逐个扫描时每个平台都拿满 9 个（不是 3 个）",
+      sorted(captured) == [("q0", 9), ("q1", 9), ("q2", 9)], str(sorted(captured)))
+check("执行顺序就是平台顺序（先 q0 再 q1 再 q2）",
+      [k for k, _w in captured] == ["q0", "q1", "q2"], str([k for k, _w in captured]))
+check("日志说明了逐个扫描与并发数",
+      any("逐个扫描" in l and "9 个并发" in l for l in logs8),
+      str([l for l in logs8 if "逐个" in l][:1]))
+check("日志里列出了平台顺序",
+      any("Q0 -> Q1 -> Q2" in l for l in logs8),
+      str([l for l in logs8 if "->" in l][:1]))
+
+print()
+print("9) 扫描顺序由开关控制（默认逐个，可切回并行）")
+# --------------------------------------------------------------------------
+check("RunConfig 默认是 sequential", RunConfig().platform_order == "sequential",
+      RunConfig().platform_order)
+
+from eo.config_store import AppConfig                             # noqa: E402
+
+check("AppConfig 默认也是 sequential", AppConfig().platform_order == "sequential",
+      AppConfig().platform_order)
+
+# runner 传参的接线（静态断言，避免"改了默认值但没接线"）
+runner_src = (ROOT / "eo" / "runner.py").read_text(encoding="utf-8")
+check("run_once 会把顺序传成 parallel_platforms",
+      "parallel_platforms=not sequential" in runner_src, "已接线")
+webui_src = (ROOT / "eo" / "webui.py").read_text(encoding="utf-8")
+check("网页端传入平台顺序", "platform_order=cfg.platform_order" in webui_src, "已接线")
+pages_src = (ROOT / "eo" / "pages.py").read_text(encoding="utf-8")
+check("网页上有这个开关", "c-seqplatforms" in pages_src, "有")
+
+# 环境变量能改
+from eo.config_store import env_overrides                          # noqa: E402
+
+os.environ["EO_PLATFORM_ORDER"] = "parallel"
+try:
+    check("EO_PLATFORM_ORDER=parallel 会被读进配置",
+          env_overrides().get("platform_order") == "parallel",
+          str(env_overrides().get("platform_order")))
+finally:
+    os.environ.pop("EO_PLATFORM_ORDER", None)
+check("不设环境变量时读到默认值",
+      env_overrides().get("platform_order") in (None, "sequential"),
+      str(env_overrides().get("platform_order")))
+
+print()
 print("=" * 70)
 if _failures:
     print(f"并发自适应测试：失败 {len(_failures)} 项")

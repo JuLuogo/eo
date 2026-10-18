@@ -208,6 +208,8 @@ PAGE_HTML = r"""<!DOCTYPE html>
           <label class="switch"><input type="checkbox" id="c-notify"> 每轮都通知</label>
           <label class="switch"><input type="checkbox" id="c-autorun"> 启动即开始循环</label>
             <label class="switch"><input type="checkbox" id="c-skipcheck"> 跳过链路自检（确认本机没挂代理）</label>
+            <label class="switch" title="逐个扫描时当前平台独占全部并发，某个平台先扫完不会让它的额度闲置">
+              <input type="checkbox" id="c-seqplatforms"> 平台逐个扫描（每个平台用满并发，推荐）</label>
         </div>
         <div class="row">
           <button class="primary" id="btn-save">保存配置</button>
@@ -543,6 +545,7 @@ function renderConfig(cfg){
   document.getElementById('c-notify').checked = !!cfg.notify_always;
   document.getElementById('c-autorun').checked = !!cfg.auto_run;
     document.getElementById('c-skipcheck').checked = !!cfg.skip_check;
+    document.getElementById('c-seqplatforms').checked = (cfg.platform_order || 'sequential') !== 'parallel';
   document.getElementById('d-dnsmode').value = cfg.dns_mode || 'none';
   document.getElementById('d-dnsconfirm').checked = !!cfg.dns_confirm;
   renderPlatforms(cfg);
@@ -678,6 +681,7 @@ async function saveAll(){
     notify_always: document.getElementById('c-notify').checked,
     auto_run: document.getElementById('c-autorun').checked,
       skip_check: document.getElementById('c-skipcheck').checked,
+      platform_order: document.getElementById('c-seqplatforms').checked ? 'sequential' : 'parallel',
     dns_mode: document.getElementById('d-dnsmode').value,
     dns_confirm: document.getElementById('d-dnsconfirm').checked,
     platforms: collectPlatformsPatch(),

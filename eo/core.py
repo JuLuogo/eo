@@ -1194,6 +1194,12 @@ def scan_platforms(
 
     # ---- 按可用内存/核数压并发（见 max_concurrent_probes 的说明）----
     parallel = bool(parallel_platforms) and len(plats) > 1
+    if not parallel and len(plats) > 1:
+        # 逐个平台扫描：每个平台独占全部并发额度（plan_workers 里 share=1），
+        # 所以当前平台能跑满，不会出现"某个平台先扫完、它那份额度闲置"的浪费。
+        order = " -> ".join(p.name for p in plats)
+        log(f"平台逐个扫描（每个平台最多 {max_concurrent_probes()} 个并发，扫完一个接下一个）："
+            f"{order}")
     # 想跑得比平台数还少（例如 EO_MAX_CONCURRENT=2 却有三个平台）时，
     # 改成平台之间串行 —— 否则每个平台至少 1 个 worker，总数必然超限。
     limit = max_concurrent_probes()
