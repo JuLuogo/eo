@@ -32,6 +32,8 @@ COMMON_VARS = [
     ("dns_mode",    "DNS 下发模式",   "none / dry-run / push"),
     ("webhook",     "异常通知地址",   "飞书/企业微信/通用 webhook"),
     ("auto_run",    "启动即开始循环", "true / false"),
+    ("max_latency_ms", "DNS 下发延迟门槛", "毫秒；只影响往 DNS 写哪些，结果文件不受影响"),
+    ("top_n",       "DNS 下发数量",   "只下发最快的 N 个；结果文件保留全部可用 IP"),
 ]
 
 ENV_MAP = {
@@ -45,6 +47,8 @@ ENV_MAP = {
     "dns_mode": "EO_DNS_SYNC",
     "webhook": "EO_WEBHOOK",
     "auto_run": "EO_AUTO_RUN",
+    "max_latency_ms": "EO_MAX_MS",
+    "top_n": "EO_TOP",
 }
 
 # 平台/部署相关（只读展示）

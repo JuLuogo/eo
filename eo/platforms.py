@@ -24,7 +24,8 @@
     key / name        唯一标识与显示名
     host              该平台的校验域名（CNAME 指向该平台边缘节点）
     targets_file      该平台要扫描的网段文件（一行一个 IP / CIDR / 区间）
-    output_file       优选结果写到哪里（一行一个 IP，可直接喂给 updatedns.py）
+    output_file       优选结果写到哪里（`IP<TAB>延迟ms`，按延迟升序、保留全部可用 IP；
+                      喂给别的脚本时用 cut -f1 取第一列）
     network + dns     运营商代号与对应的 DNS 记录名
 
 判断 host 是否正确的标准：本机用 【默认解析】 访问 https://<host> 返回 200。
