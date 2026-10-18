@@ -207,6 +207,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
           <label class="switch"><input type="checkbox" id="c-verbose"> 日志逐 IP 输出</label>
           <label class="switch"><input type="checkbox" id="c-notify"> 每轮都通知</label>
           <label class="switch"><input type="checkbox" id="c-autorun"> 启动即开始循环</label>
+            <label class="switch"><input type="checkbox" id="c-skipcheck"> 跳过链路自检（确认本机没挂代理）</label>
         </div>
         <div class="row">
           <button class="primary" id="btn-save">保存配置</button>
@@ -541,6 +542,7 @@ function renderConfig(cfg){
   document.getElementById('c-verbose').checked = !!cfg.verbose;
   document.getElementById('c-notify').checked = !!cfg.notify_always;
   document.getElementById('c-autorun').checked = !!cfg.auto_run;
+    document.getElementById('c-skipcheck').checked = !!cfg.skip_check;
   document.getElementById('d-dnsmode').value = cfg.dns_mode || 'none';
   document.getElementById('d-dnsconfirm').checked = !!cfg.dns_confirm;
   renderPlatforms(cfg);
@@ -675,6 +677,7 @@ async function saveAll(){
     verbose: document.getElementById('c-verbose').checked,
     notify_always: document.getElementById('c-notify').checked,
     auto_run: document.getElementById('c-autorun').checked,
+      skip_check: document.getElementById('c-skipcheck').checked,
     dns_mode: document.getElementById('d-dnsmode').value,
     dns_confirm: document.getElementById('d-dnsconfirm').checked,
     platforms: collectPlatformsPatch(),

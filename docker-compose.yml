@@ -71,6 +71,8 @@ services:
       # 是否校验网页访问令牌。off=关闭（内网/单机免去 ?token=），
       # 关掉后任何能访问该端口的人都能改配置、触发扫描、下发 DNS。
       EO_WEB_AUTH: "${EO_WEB_AUTH:-on}"
+      # 1=跳过每轮开头的链路可信度自检（确认本机没挂代理时可省点时间）
+      EO_SKIP_CHECK: "${EO_SKIP_CHECK:-}"
       EO_AUTO_RUN: "${EO_AUTO_RUN:-false}"     # true=容器启动即开始循环
       EO_CYCLES: "${EO_CYCLES:-}"         # monitor 模式跑几轮，留空=一直跑
       EO_EXTRA_ARGS: "${EO_EXTRA_ARGS:-}" # 追加任意参数，如 "--ping --retries 2"

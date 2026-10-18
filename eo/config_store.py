@@ -196,6 +196,9 @@ class AppConfig:
     # 是否校验网页访问令牌。内网/单机可以关掉（EO_WEB_AUTH=off）：
     # 关掉后任何能访问该端口的人都能改配置、触发扫描、下发 DNS，务必确认网络可信。
     web_auth: bool = True
+    # 跳过「链路可信度自检」：每轮扫描前会拿保留地址去请求同一域名，
+    # 确认链路没被代理/中间盒接管。确认机器干净、想省掉这点时间可以跳过。
+    skip_check: bool = False
     auto_run: bool = False             # 容器启动后是否自动开始循环
     platforms: dict[str, PlatformSettings] = field(default_factory=dict)
     dns: dict[str, DnsSettings] = field(default_factory=dict)
@@ -220,6 +223,7 @@ class AppConfig:
             "top_n": self.top_n,
             "auto_run": self.auto_run,
             "web_auth": self.web_auth,
+            "skip_check": self.skip_check,
             "web_token_set": bool(self.web_token),
             "web_token_masked": _mask(self.web_token) if self.web_token else "",
             "platforms": {k: v.to_dict() for k, v in self.platforms.items()},
@@ -233,7 +237,7 @@ class AppConfig:
         for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                     "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
                     "notify_always", "log_buffer", "max_latency_ms", "top_n",
-                    "web_token", "web_auth", "auto_run"):
+                    "web_token", "web_auth", "skip_check", "auto_run"):
             if key in data and data[key] is not None:
                 setattr(config, key, data[key])
 
@@ -330,6 +334,7 @@ def env_overrides() -> dict:
         "EO_MAX_MS": ("max_latency_ms", float),
         "EO_TOP": ("top_n", int),
         # 关掉网页令牌校验（内网/单机）。off/false/0/no 都算关闭
+        "EO_SKIP_CHECK": ("skip_check", lambda v: str(v).strip().lower() in ("1", "true", "yes", "on")),
         "EO_WEB_AUTH": ("web_auth",
                         lambda v: str(v).strip().lower() not in ("off", "false", "0", "no", "none")),
         "EO_WEBHOOK": ("webhook", str),
@@ -460,7 +465,7 @@ class ConfigStore:
             for key in ("rate", "interval", "window", "workers", "timeout", "retries",
                         "ping", "verbose", "dns_mode", "dns_confirm", "webhook",
                         "notify_always", "log_buffer", "max_latency_ms", "top_n",
-                        "web_auth", "auto_run"):
+                        "web_auth", "skip_check", "auto_run"):
                 if key in patch and patch[key] is not None:
                     coerced = _coerce_app_field(key, patch[key])
                     if coerced is _DROP:

@@ -775,6 +775,12 @@ def _http_probe_curl(
     return result
 
 
+# 链路自检的探测超时：只用来抓「保留地址也被应答」这种情况 ——
+# 那是中间盒在本地立刻回包（毫秒级），1.5 秒足够；
+# 而正常情况本来就是超时，等满 timeout 是白等（3 个平台每轮约 18 秒）。
+INTEGRITY_PROBE_TIMEOUT = 1.5
+
+
 def check_network_integrity(host: str, timeout: float = 3.0, port: int = 443,
                             status_codes: Sequence[str] = ("200",)) -> tuple[bool, str]:
     """判断本机链路是否可信：优选依赖「把域名钉到指定 IP」，如果本机装了代理、
@@ -789,8 +795,12 @@ def check_network_integrity(host: str, timeout: float = 3.0, port: int = 443,
     probes = ["192.0.2.1", "198.51.100.7"]
     suspicious: list[str] = []
 
+    # 这里用【短超时】：能抓到的异常是「中间盒把保留地址也应答了」，
+    # 那种情况是本地立刻回包、毫秒级；而正常情况是超时——不需要等满 timeout。
+    # 按 3 秒等的话，3 个平台每轮要白等约 18 秒（每个平台 2 个地址）。
+    fast_timeout = min(timeout, INTEGRITY_PROBE_TIMEOUT)
     for ip in probes:
-        probe = http_probe(ip, host=host, timeout=timeout, port=port,
+        probe = http_probe(ip, host=host, timeout=fast_timeout, port=port,
                            status_codes=status_codes)
         if probe.status in set(status_codes):
             suspicious.append(f"{ip} 竟返回 HTTP {probe.status}（{probe.connect_ms:.0f}ms）")
