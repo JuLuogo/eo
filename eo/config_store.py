@@ -16,7 +16,7 @@ import secrets
 import threading
 from dataclasses import MISSING, asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 MASK = "******"
 
@@ -44,10 +44,12 @@ def _mask(value: str) -> str:
 # 所以按字段类型统一转换一次；空字符串表示「回退到默认」，存 None。
 _DROP = object()
 _STR_FIELDS = {"host", "scheme", "targets_file", "output_file", "http_path",
-               "status_codes", "auto_targets"}
-_INT_FIELDS = {"workers", "retries", "sample_per_24", "top_n"}
-_FLOAT_FIELDS = {"timeout", "max_latency_ms"}
-_BOOL_FIELDS = {"enabled", "ping"}
+               "status_codes", "auto_targets", "speed_path"}
+_INT_FIELDS = {"workers", "retries", "sample_per_24", "top_n",
+               "speed_top", "speed_concurrency"}
+_FLOAT_FIELDS = {"timeout", "max_latency_ms", "speed_limit_mbps", "min_speed_mbps",
+                 "speed_seconds", "speed_bytes_mb"}
+_BOOL_FIELDS = {"enabled", "ping", "speed_test"}
 
 
 def _coerce_platform_field(name: str, raw):
@@ -136,6 +138,15 @@ class PlatformSettings:
     sample_per_24: int | None = None    # 粗扫抽样：每 /24 取几个代表 IP
     max_latency_ms: float | None = None  # 延迟门槛：超过就丢弃（None/0 = 不限）
     top_n: int | None = None             # 只保留最快的 N 个（None/0 = 全部）
+    # ---- 下载测速 ----
+    speed_test: bool = False             # 是否启用测速
+    speed_path: str = ""                 # 测速下载路径（空=用 http_path）
+    speed_limit_mbps: float | None = None   # 单 IP 测速限速（0/None = 不限）
+    min_speed_mbps: float | None = None     # 速度阈值，低于则不下发（0/None = 不设）
+    speed_seconds: float | None = None      # 单 IP 测速时长（秒）
+    speed_bytes_mb: float | None = None     # 单 IP 最多下载 MB
+    speed_top: int | None = None            # 只测延迟最好的前 N 个
+    speed_concurrency: int | None = None    # 测速并发
     http_path: str = "/"
     status_codes: str = "200"          # 逗号分隔
     ping: bool = False
@@ -462,6 +473,56 @@ class ConfigStore:
             added = True
         return added
 
+    def ensure_platform_entries(self, effective: Sequence[Mapping[str, Any]]) -> bool:
+        """为网页补齐缺失的平台条目（值取自当前**生效**的平台配置）。
+
+        为什么需要：`renderPlatforms` 只遍历 config.platforms，而容器部署通常
+        只给环境变量（EO_NETWORK=lt 之类），config.json 里一个平台都没有 ——
+        于是「平台设置」整块是空白的。用户看到的是"面板什么都没有"，
+        不是"页面没加载"，但两者很难区分，实测就是这么被误解的。
+
+        补的值是**解析后的生效值**（NULL 的字段保持 None，表示沿用代码默认），
+        只在内存里补，不落盘；用户在网页上改过之后才随 save() 写文件。
+
+        注意 enabled 必须照抄生效值：代码里 esa/cft 的运营商变体默认是关的，
+        如果这里一律写 True，等于把没选的平台全打开（工作量暴涨）。
+        """
+        added = False
+        known = set(self.config.platforms)
+        for item in effective or []:
+            key = str(item.get("key") or "").strip()
+            if not key or key in known:
+                continue
+            self.config.platforms[key] = PlatformSettings(
+                key=key,
+                enabled=bool(item.get("enabled", False)),
+                host=str(item.get("host") or ""),
+                scheme=str(item.get("scheme") or ""),
+                targets_file=str(item.get("targets_file") or ""),
+                output_file=str(item.get("output_file") or ""),
+                workers=item.get("workers"),
+                timeout=item.get("timeout"),
+                retries=item.get("retries"),
+                sample_per_24=item.get("sample_per_24"),
+                max_latency_ms=item.get("max_latency_ms"),
+                top_n=item.get("top_n"),
+                http_path=str(item.get("http_path") or "/"),
+                status_codes=str(item.get("status_codes") or "200"),
+                ping=bool(item.get("ping", False)),
+                auto_targets=str(item.get("auto_targets") or ""),
+                speed_test=bool(item.get("speed_test", False)),
+                speed_path=str(item.get("speed_path") or ""),
+                speed_limit_mbps=item.get("speed_limit_mbps"),
+                min_speed_mbps=item.get("min_speed_mbps"),
+                speed_seconds=item.get("speed_seconds"),
+                speed_bytes_mb=item.get("speed_bytes_mb"),
+                speed_top=item.get("speed_top"),
+                speed_concurrency=item.get("speed_concurrency"),
+            )
+            known.add(key)
+            added = True
+        return added
+
     def update(self, patch: dict) -> AppConfig:
         """按前端提交的 patch 更新配置；掩码值不会覆盖真实密钥。"""
         with self._lock:
@@ -485,6 +546,9 @@ class ConfigStore:
                 for field_name in ("enabled", "host", "scheme", "targets_file", "output_file",
                                    "workers", "timeout", "retries", "sample_per_24",
                                    "max_latency_ms", "top_n",
+                                   "speed_test", "speed_path", "speed_limit_mbps",
+                                   "min_speed_mbps", "speed_seconds", "speed_bytes_mb",
+                                   "speed_top", "speed_concurrency",
                                    "http_path", "status_codes", "ping", "auto_targets"):
                     if field_name in value and value[field_name] is not None:
                         coerced = _coerce_platform_field(field_name, value[field_name])

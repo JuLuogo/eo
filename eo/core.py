@@ -446,6 +446,11 @@ class Probe:
     error: str = ""
     remote_ip: str = ""
     attempts: int = 0        # 一共试了几次（>1 说明这个节点第一次没连上，稳定性较差）
+    # 下载测速结果（仅当平台开了测速、且这个 IP 在"延迟最好的前 N 个"里才有值）。
+    # 注意：测速失败不代表节点不可用 —— 节点是活的，只是没测出速度，
+    # 所以单独一个字段，不塞进 ok/error。
+    speed_mbps: float | None = None
+    speed_error: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -843,6 +848,15 @@ class Platform:
     max_latency_ms: float = 0.0
     # 只保留最快的 N 个节点；0 = 全部保留
     top_n: int = 0
+    # ---- 下载测速（按域名 SNI 钉 IP 下载，挑掉"能连上但带宽差"的节点）----
+    speed_test: bool = False          # 是否启用测速
+    speed_path: str = ""              # 测速用的下载路径；空 = 用 path
+    speed_limit_mbps: float = 0.0     # 单个 IP 的测速限速（Mbps）；0 = 不限
+    min_speed_mbps: float = 0.0       # 速度阈值：低于它的 IP 下发时丢弃；0 = 不设
+    speed_seconds: float = 3.0        # 单个 IP 最长测速时长（秒）
+    speed_bytes_mb: float = 6.0       # 单个 IP 最多下载多少 MB
+    speed_top: int = 50               # 只对延迟最好的前 N 个测速；0 = 全部
+    speed_concurrency: int = 3        # 测速并发（并发越高越容易把本机带宽打满、数字互相干扰）
     # 每轮扫描前自动拉取网段（cloudfront / cloudflare）；留空 = 关闭。
     # 见 ranges.auto_refresh：文件还新鲜时不重复拉取，失败也不影响本轮扫描。
     auto_targets: str = ""
@@ -1157,6 +1171,15 @@ def scan_platform(
     # 排序：延迟优先，同样延迟时把「重试过的」排后面（稳定性更好）
     passed.sort(key=lambda p: (p.latency_ms or 1e9, p.attempts))
 
+    # 下载测速：只测延迟最好的一批（speed_top），结果写回 Probe.speed_mbps。
+    # 放在排序之后、写文件之前 —— 结果文件里就能带上速度列，
+    # DNS 下发时按「阈值 + 门槛 + 前 N」依次筛（见 dns._select_for_dns）。
+    if getattr(platform, "speed_test", False) and passed:
+        from .speed import run_speed_tests
+
+        run_speed_tests(platform, passed, log=log, quiet=quiet,
+                        stop_event=stop_event, limiter=limiter)
+
     # 注意：这里【不做】延迟门槛丢弃、也不取前 N ——
     # 结果文件保留全部可用 IP（按延迟排序，方便人工核对与对比），
     # 「延迟门槛 + 只取前 N」只作用于 DNS 下发（见 dns.sync_platform）。
@@ -1277,8 +1300,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = True) -> None:
-    """写入结果文件：**全部可用 IP**，按延迟升序，格式 ``IP<TAB>延迟ms``。
+def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = True,
+                 with_speed: bool = False) -> None:
+    """写入结果文件：**全部可用 IP**，按延迟升序，格式 ``IP<TAB>延迟ms[<TAB>速度Mbps]``。
 
     为什么延迟列始终写：DNS 下发要靠它做「门槛筛选 + 只取前 N」，
     而结果文件是 DNS 下发的输入（自动路径与 update_dns.py 都读它）。
@@ -1288,9 +1312,18 @@ def write_result(path: Path, probes: Sequence[Probe], with_latency: bool = True)
     DNS 上只放最优的一小批（由平台设置里的门槛与数量控制）。
     两边口径分开，互不影响。
 
+    速度列只在开了测速时写：没测到的（只测前 N 个，其余没测）写 ``-``，
+    不是 0 —— 0 会被误读成"测得 0Mbps"。
+
     with_latency 参数保留只为兼容旧调用：现在无论传什么都会写延迟列。
     """
-    lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
+    if with_speed:
+        lines = []
+        for p in probes:
+            speed = f"{p.speed_mbps:.1f}Mbps" if p.speed_mbps is not None else "-"
+            lines.append(f"{p.ip}\t{p.latency_ms:.0f}ms\t{speed}")
+    else:
+        lines = [f"{p.ip}\t{p.latency_ms:.0f}ms" for p in probes]
     atomic_write_text(path, "\n".join(lines))
 
 

@@ -177,6 +177,26 @@ class OptimizerService:
                                 else cfg.max_latency_ms),
                 top_n=(override.top_n if override and override.top_n is not None
                        else cfg.top_n),
+                speed_test=(bool(override.speed_test) if override else base.speed_test),
+                speed_path=(override.speed_path if override and override.speed_path
+                            else base.speed_path),
+                speed_limit_mbps=(override.speed_limit_mbps if override
+                                  and override.speed_limit_mbps is not None
+                                  else base.speed_limit_mbps),
+                min_speed_mbps=(override.min_speed_mbps if override
+                                and override.min_speed_mbps is not None
+                                else base.min_speed_mbps),
+                speed_seconds=(override.speed_seconds if override
+                               and override.speed_seconds is not None
+                               else base.speed_seconds),
+                speed_bytes_mb=(override.speed_bytes_mb if override
+                                and override.speed_bytes_mb is not None
+                                else base.speed_bytes_mb),
+                speed_top=(override.speed_top if override and override.speed_top is not None
+                           else base.speed_top),
+                speed_concurrency=(override.speed_concurrency if override
+                                   and override.speed_concurrency is not None
+                                   else base.speed_concurrency),
                 targets_file=(override.targets_file if override and override.targets_file
                               else base.targets_file),
                 output_file=(override.output_file if override and override.output_file
@@ -363,21 +383,67 @@ class OptimizerService:
                                 "no_write": True, "dns_force": force})
 
     # ---- 状态 ----
-    def config_payload(self) -> dict:
-        """返回给网页的配置（同时补齐 DNS 面板所需的条目）。
+    @staticmethod
+    def _platform_view(platform, override=None) -> dict:
+        """把一个 Platform 摊平成给网页用的字典（状态与配置面板共用）。"""
+        return {
+            "key": platform.key,
+            "name": platform.name,
+            "network": platform.network,
+            "network_label": network_label(platform.network),
+            "enabled": platform.enabled,
+            "host": platform.host,
+            "scheme": platform.scheme,
+            "http_path": platform.path,
+            "targets_file": platform.targets_file,
+            "output_file": platform.output_file,
+            "workers": platform.workers,
+            "timeout": platform.timeout,
+            "retries": platform.retries,
+            "sample_per_24": platform.sample_per_24,
+            "max_latency_ms": platform.max_latency_ms,
+            "top_n": platform.top_n,
+            "speed_test": bool(getattr(platform, "speed_test", False)),
+            "min_speed_mbps": float(getattr(platform, "min_speed_mbps", 0.0) or 0.0),
+            "speed_limit_mbps": float(getattr(platform, "speed_limit_mbps", 0.0) or 0.0),
+            # 这两个 0 表示"用默认值"，所以显示也要按默认值显示，否则面板写的和实际跑的不一致
+            "speed_seconds": float(getattr(platform, "speed_seconds", 3.0) or 3.0),
+            "speed_bytes_mb": float(getattr(platform, "speed_bytes_mb", 6.0) or 6.0),
+            # 0 = 全部测（与 run_speed_tests 的语义一致，不能显示成 50）
+            "speed_top": int(getattr(platform, "speed_top", 0) or 0),
+            "speed_concurrency": int(getattr(platform, "speed_concurrency", 3) or 3),
+            "speed_path": getattr(platform, "speed_path", "") or "",
+            "ping": platform.precheck_ping,
+            "status_codes": ",".join(platform.status_codes),
+            "dns_enabled": bool(platform.dns),
+            "dns_provider": (platform.dns or {}).get("provider", ""),
+            "record_name": (platform.dns or {}).get("record_name", ""),
+            "auto_targets": override.auto_targets if override else "",
+        }
 
-        网页的「DNS 下发」面板只渲染 config.dns 里已有的条目，
-        这里按当前生效的平台补齐缺失项，保证用户有入口可配。
+    def config_payload(self) -> dict:
+        """返回给网页的配置（同时补齐平台 / DNS 面板所需的条目）。
+
+        为什么必须补：网页的「平台设置」只渲染 config.platforms 里**已有**的条目，
+        而容器部署通常只用环境变量（EO_NETWORK=lt）指定平台 —— config.json 里
+        一个平台条目都没有，于是「平台设置」整个面板是空的：用户什么也看不到，
+        还以为是页面没加载。DNS 面板同理（原来只补了 dns，漏了 platforms）。
         """
-        defaults: dict[str, dict] = {}
+        dns_defaults: dict[str, dict] = {}
+        platform_defaults: list[dict] = []
         try:
             for platform in self.build_platforms():
+                override = self.store.get().platforms.get(platform.key)
+                platform_defaults.append(self._platform_view(platform, override))
                 if platform.dns:
-                    defaults[platform.key] = dict(platform.dns)
+                    dns_defaults[platform.key] = dict(platform.dns)
         except Exception:                       # pragma: no cover - 配置异常时不阻断页面
-            defaults = {}
-        if defaults:
-            self.store.ensure_dns_entries(defaults)
+            dns_defaults = {}
+            platform_defaults = []
+        if platform_defaults:
+            self.store.ensure_platform_entries(platform_defaults)
+        if dns_defaults:
+            self.store.ensure_dns_entries(dns_defaults)
         return self.store.get().to_dict()
 
     def vars_overview(self) -> dict:
@@ -399,32 +465,8 @@ class OptimizerService:
 
     def status(self) -> dict:
         cfg = self.store.get()
-        platforms = []
-        for platform in self.build_platforms():
-            override = cfg.platforms.get(platform.key)
-            platforms.append({
-                "key": platform.key,
-                "name": platform.name,
-                "network": platform.network,
-                "network_label": network_label(platform.network),
-                "enabled": platform.enabled,
-                "host": platform.host,
-                "scheme": platform.scheme,
-                "targets_file": platform.targets_file,
-                "output_file": platform.output_file,
-                "workers": platform.workers,
-                "timeout": platform.timeout,
-                "retries": platform.retries,
-                "sample_per_24": platform.sample_per_24,
-                "max_latency_ms": platform.max_latency_ms,
-                "top_n": platform.top_n,
-                "ping": platform.precheck_ping,
-                "status_codes": ",".join(platform.status_codes),
-                "dns_enabled": bool(platform.dns),
-                "dns_provider": (platform.dns or {}).get("provider", ""),
-                "record_name": (platform.dns or {}).get("record_name", ""),
-                "auto_targets": override.auto_targets if override else "",
-            })
+        platforms = [self._platform_view(platform, cfg.platforms.get(platform.key))
+                     for platform in self.build_platforms()]
         return {
             "runner": self.runner.snapshot(),
             "progress": self.progress,

@@ -94,6 +94,32 @@ def _suspicious_result_file(platform) -> str:
     return looks_suspicious(latencies, total=len(ips))
 
 
+def _apply_saved_filters(platforms: list) -> list:
+    """把手动下发也用上网页里保存的筛选设置（延迟门槛 / 数量 / 测速阈值）。
+
+    为什么必须：手动下发以前只读代码里的默认值（门槛=0、数量=0、不测速），
+    于是同一个结果文件，网页点「下发」只发 10 个，命令行却发全部 ——
+    用户会以为网页上的设置没生效。这里读同一份 config.json，两边口径一致。
+    """
+    try:
+        from eo.config_store import ConfigStore
+
+        cfg = ConfigStore().get()
+    except Exception as exc:                                   # noqa: BLE001
+        safe_log(f"⚠ 读取 config.json 失败（{type(exc).__name__}: {exc}），按代码默认筛选")
+        return platforms
+    fields = ("max_latency_ms", "top_n", "speed_test", "min_speed_mbps")
+    for platform in platforms:
+        saved = cfg.platforms.get(getattr(platform, "key", ""))
+        if not saved:
+            continue
+        for name in fields:
+            value = getattr(saved, name, None)
+            if value is not None:
+                setattr(platform, name, value)
+    return platforms
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -102,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.platform:
-        platforms = get_platforms(args.platform)
+        platforms = _apply_saved_filters(get_platforms(args.platform))
         failures = 0
         for platform in platforms:
             # 与自动下发路径保持一致：结果可疑就拒绝下发，除非显式 --force。

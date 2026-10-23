@@ -257,7 +257,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
         </div>
         <div class="hint" style="margin-bottom:6px">
           <b>下发筛选</b>：只把测试结果里延迟达标、最快的 N 个 IP 写进 DNS；结果文件本身仍然保留全部可用 IP。
-          「预览下发 / 立即下发」会先自动保存这里的改动。
+          速度阈值在「平台设置 → 展开平台 → 下载测速」里设；「预览下发 / 立即下发」会先自动保存这里的改动。
         </div>
         <div id="dns-filters"></div>
         <div id="dns-panels" style="margin-top:14px"></div>
@@ -326,7 +326,9 @@ let LOG_CURSOR = 0, AUTOSCROLL = true, STATE = null, PLAT_CACHE = [], CONFIG = n
 /* 平台面板里需要按数字提交的字段（漏了也不会存坏 —— 后端会按字段类型转换，
    但发对类型更清楚，也少一层依赖） */
 const NUMERIC_PLATFORM_FIELDS = ['workers','timeout','retries','sample_per_24',
-                                 'max_latency_ms','top_n'];
+                                 'max_latency_ms','top_n',
+                                 'speed_limit_mbps','min_speed_mbps','speed_seconds',
+                                 'speed_bytes_mb','speed_top','speed_concurrency'];
 
 function headers(extra){ const h = Object.assign({'Content-Type':'application/json'}, extra||{});
   if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN; return h; }
@@ -561,13 +563,31 @@ function renderConfig(cfg){
 function renderPlatforms(cfg){
   const box = document.getElementById('platforms');
   box.innerHTML = '';
-  Object.entries(cfg.platforms||{}).forEach(([key, p])=>{
+  const entries = Object.entries(cfg.platforms||{});
+  if (!entries.length){
+    box.innerHTML = '<div class="hint">没有读到平台配置。请检查 EO_NETWORK / EO_PLATFORMS 环境变量，'+
+      '或刷新页面重试。</div>';
+    return;
+  }
+  const bar = document.createElement('div');
+  bar.className = 'row';
+  bar.style.marginBottom = '8px';
+  bar.innerHTML = '<button id="btn-expand-platforms" style="padding:4px 10px;font-size:12px">全部展开</button>'+
+    '<span class="hint" style="margin:0">这里显示当前生效值（来自 .env / 代码默认 / 网页设置）；改完点最上面的「保存配置」。</span>';
+  box.appendChild(bar);
+  entries.forEach(([key, p])=>{
     const d = document.createElement('details');
     d.innerHTML =
       '<summary><input type="checkbox" data-k="'+key+'" data-f="enabled" '+(p.enabled?'checked':'')+
       ' onclick="event.stopPropagation()"> <b>'+esc(key.toUpperCase())+'</b>'+
       '<span class="tag">'+esc(p.host||'未配置域名')+'</span>'+
-      '<span class="tag">'+esc(p.targets_file||'无网段文件')+'</span></summary>'+
+      '<span class="tag">'+esc(p.targets_file||'无网段文件')+'</span>'+
+      ((p.speed_test)
+        ? '<span class="tag" style="color:#0a7">测速' +
+          (Number(p.min_speed_mbps || 0) > 0 ? ' ≥' + esc(p.min_speed_mbps) + 'Mbps' : ' 开') +
+          '</span>'
+        : '')+
+      '</summary>'+
       '<div class="inner"><div class="grid2">'+
       field('校验域名（CNAME 到该平台边缘）', key, 'host', p.host) +
       selStatic('协议', key, 'scheme', p.scheme || 'https',
@@ -581,10 +601,32 @@ function renderPlatforms(cfg){
       field('重试次数（留空=默认）', key, 'retries', p.retries) +
       field('粗扫抽样（每 /24 取几个 IP，留空=默认）', key, 'sample_per_24', p.sample_per_24) +
       field('自动拉取网段（cloudfront / cloudflare，留空=关闭）', key, 'auto_targets', p.auto_targets) +
+      '</div>'+
+      '<div class="hint" style="margin:10px 0 4px"><b>下载测速</b>：按域名 SNI 钉这个 IP 下载，'+
+      '低于阈值的 IP 不下发。测速路径必须能下载到<b>大文件</b>（几 MB），否则测不出速度。</div>'+
+      '<div class="grid2">'+
+      field('测速路径（如 /10mb.bin，留空=用上面的请求路径）', key, 'speed_path', p.speed_path) +
+      field('最低速度（Mbps，低于就不下发；0/空=不设）', key, 'min_speed_mbps', p.min_speed_mbps) +
+      field('测速限速（Mbps，0/空=不限；限速会抹平更快的节点）', key, 'speed_limit_mbps', p.speed_limit_mbps) +
+      field('单 IP 测速时长（秒）', key, 'speed_seconds', p.speed_seconds) +
+      field('单 IP 最多下载（MB）', key, 'speed_bytes_mb', p.speed_bytes_mb) +
+      field('只测延迟最好的前 N 个', key, 'speed_top', p.speed_top) +
+      field('测速并发（越大越吃带宽）', key, 'speed_concurrency', p.speed_concurrency) +
       '</div><label class="switch"><input type="checkbox" data-k="'+key+'" data-f="ping" '+
-      (p.ping?'checked':'')+'> 启用 ICMP 预筛选</label></div>';
+      (p.ping?'checked':'')+'> 启用 ICMP 预筛选</label>'+
+      '<label class="switch"><input type="checkbox" data-k="'+key+'" data-f="speed_test" '+
+      (p.speed_test?'checked':'')+'> 启用下载测速</label></div>';
     box.appendChild(d);
   });
+  const expand = bar.querySelector('#btn-expand-platforms');
+  if (expand){
+    expand.onclick = ()=>{
+      const items = box.querySelectorAll('details');
+      const open = !Array.from(items).every(x=>x.open);
+      items.forEach(x=>{ x.open = open; });
+      expand.textContent = open ? '全部收起' : '全部展开';
+    };
+  }
   box.querySelectorAll('input[type=checkbox]').forEach(cb=>{
     cb.addEventListener('change', ()=>{ savePlatform(cb.dataset.k, cb.dataset.f, cb.checked); });
   });
@@ -677,6 +719,8 @@ function renderDnsFilters(cfg){
       ? '' : p.top_n;
     const msText = ms === '' ? (gMs > 0 ? gMs + 'ms（全局默认）' : '不限') : ms + 'ms';
     const topText = top === '' ? (gTop > 0 ? gTop + ' 个（全局默认）' : '全部') : top + ' 个';
+    const minSpeed = Number(p.min_speed_mbps || 0);
+    const speedText = p.speed_test ? ('速度 ≥ ' + (minSpeed > 0 ? minSpeed + 'Mbps' : '不限')) : '未开测速';
     html += '<div class="grid3" style="margin-bottom:8px">'+
       '<div class="field"><label>'+esc(k.toUpperCase())+' 延迟上限（ms，超过不下发）</label>'+
       '<input type="number" min="0" step="1" data-pk="'+esc(k)+'" data-pf="max_latency_ms" value="'+esc(ms)+
@@ -686,7 +730,8 @@ function renderDnsFilters(cfg){
       '" placeholder="0/空=全部"></div>'+
       '<div class="field"><label>'+esc(k.toUpperCase())+' 当前生效'+
       (d.record_name?' · '+esc(d.record_name):' · '+(dnsMap[k]?'未填记录名':'未配置 DNS'))+
-      '</label><div class="hint" style="margin:8px 0 0">延迟 ≤ '+esc(msText)+' ，下发 '+esc(topText)+'</div></div>'+
+      '</label><div class="hint" style="margin:8px 0 0">延迟 ≤ '+esc(msText)+' ，下发 '+esc(topText)+
+      ' ，'+esc(speedText)+'</div></div>'+
       '</div>';
   });
   box.innerHTML = html;
@@ -759,6 +804,8 @@ function bind(){
   document.getElementById('btn-vsave').onclick = saveVars;
   document.getElementById('btn-vreload').onclick = () => { loadVars().then(()=>toast('已重新读取')); };
   document.getElementById('btn-run').onclick = async ()=>{
+    // 先保存：否则刚改的测速/并发设置这一轮还没生效，看起来像"设置没用"
+    try{ await saveAll(); }catch(e){ return; }
     const r = await post('/api/control/start'); toast(r.message, r.ok?'ok':'err'); refresh(); };
   document.getElementById('btn-stop').onclick = async ()=>{
     const r = await post('/api/control/stop'); toast(r.message, r.ok?'ok':'err'); refresh(); };

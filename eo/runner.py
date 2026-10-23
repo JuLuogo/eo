@@ -279,14 +279,21 @@ def run_once(
         if outcome.passed:
             top = ", ".join(f"{p.ip}({p.latency_ms:.0f}ms)" for p in outcome.passed[:5])
             log(f"  最快节点: {top}")
+            measured = [p for p in outcome.passed if p.speed_mbps is not None]
+            if measured:
+                best = max(measured, key=lambda p: p.speed_mbps or 0.0)
+                log(f"  测速: {len(measured)} 个有速度数据，最快 {best.ip} "
+                    f"{best.speed_mbps:.1f}Mbps")
 
         if not config.no_write:
             if outcome.platform.output_file:
                 # 结果文件写【全部】可用 IP（带延迟列，按延迟升序）；
                 # 「门槛 + 只取前 N」在 DNS 下发那一步才生效（见 dns._select_for_dns）
-                write_result(Path(outcome.platform.output_file), outcome.passed)
+                write_result(Path(outcome.platform.output_file), outcome.passed,
+                             with_speed=bool(getattr(outcome.platform, "speed_test", False)))
                 log(f"  结果 -> {outcome.platform.output_file}"
-                    f"（{len(outcome.passed)} 个可用 IP，按延迟排序）")
+                    f"（{len(outcome.passed)} 个可用 IP，按延迟排序"
+                    f"{'，带测速列' if getattr(outcome.platform, 'speed_test', False) else ''}）")
             if outcome.platform.history_file:
                 append_history(Path(outcome.platform.history_file), outcome.platform, outcome)
 
@@ -305,7 +312,9 @@ def run_once(
                 "elapsed": round(o.elapsed, 2),
                 "error": o.error,
                 "suspicious": suspended,
-                "ips": [{"ip": p.ip, "ms": round(p.latency_ms, 1)} for p in o.passed],
+                "ips": [{"ip": p.ip, "ms": round(p.latency_ms, 1),
+                         **({"mbps": round(p.speed_mbps, 1)} if p.speed_mbps is not None else {})}
+                        for p in o.passed],
             }
             for o, suspended in results
         ]
