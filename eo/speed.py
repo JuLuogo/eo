@@ -229,7 +229,19 @@ def run_speed_tests(
         log(f"[{platform.name}] ⚠ 「只测前 N 个」={top} 超过硬上限，最多测 {MAX_CANDIDATES} 个"
             f"（避免一次测掉几百 GB 流量；需要更省就把 N 调小或设限速）")
         top = MAX_CANDIDATES
-    candidates = probes[:top]
+
+    # 只在「延迟门槛内」的 IP 里挑：超过门槛的反正不会被下发，
+    # 测它纯属白烧流量。没设门槛时就是全部可用 IP。
+    max_ms = float(getattr(platform, "max_latency_ms", 0) or 0)
+    pool = probes
+    trimmed = 0
+    if max_ms > 0:
+        pool = [p for p in probes if (p.latency_ms or 0) <= max_ms]
+        trimmed = len(probes) - len(pool)
+        if trimmed and not quiet:
+            log(f"[{platform.name}] 延迟门槛 {max_ms:g}ms 内的 IP 只有 {len(pool)} 个，"
+                f"其余 {trimmed} 个不测速（反正不会下发）")
+    candidates = pool[:top]
     stats["skipped"] = max(0, len(probes) - len(candidates))
     if not candidates:
         return stats

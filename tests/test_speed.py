@@ -248,6 +248,18 @@ check("测速时长超过上限按上限执行", abs(got_kw["seconds"] - speed_m
       f"{got_kw['seconds']}")
 check("时长被截断时有日志", any("超过上限" in l for l in time_logs), str(time_logs))
 
+# ---- 只在延迟门槛内测速：门槛外的反正不会下发，别白烧流量 ----
+lat_logs: list[str] = []
+plat_lat = Platform(key="lat-lt", name="Lat", host="t.local", workers=2,
+                    speed_test=True, speed_top=10, max_latency_ms=12.0,
+                    speed_seconds=1.0, speed_concurrency=2)
+stats_lat = run_speed_tests(plat_lat, make_probes(6), log=lat_logs.append,
+                            quiet=False,
+                            prober=lambda ip, **kw: SpeedResult(ip=ip, ok=True, mbps=10.0,
+                                                                bytes=200_000, seconds=1.0))
+check("延迟门槛外的 IP 不测速", stats_lat["tested"] == 3, str(stats_lat))
+check("日志说明了为什么少测", any("不会下发" in l for l in lat_logs), str(lat_logs[:2]))
+
 # --------------------------------------------------------------------------
 print()
 print("4) 与扫描/落盘接线：结果文件第三列 = 速度（没测到写 -）")
