@@ -196,6 +196,28 @@ def speed_probe(
                 pass
 
 
+def normalize_speed_path(raw: str) -> str:
+    """把用户填的「测速路径」收拾成能直接拼进请求行的形式。
+
+    实测很容易填成完整 URL（`https://pcb.example.com/10mb.bin`），
+    直接拼进 ``GET {path} HTTP/1.1`` 会被服务端当非法请求（400/404），
+    而用户只会看到"测速全部失败"，无从下手。这里统一取路径部分。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "/"
+    low = text.lower()
+    for scheme in ("http://", "https://"):
+        if low.startswith(scheme):
+            rest = text[len(scheme):]
+            slash = rest.find("/")
+            text = rest[slash:] if slash >= 0 else "/"
+            break
+    if not text.startswith("/"):
+        text = "/" + text
+    return text
+
+
 # --------------------------------------------------------------------------
 # 批量测速：只测延迟最好的一批，结果写回 Probe
 # --------------------------------------------------------------------------
@@ -246,7 +268,10 @@ def run_speed_tests(
     if not candidates:
         return stats
 
-    path = getattr(platform, "speed_path", "") or getattr(platform, "path", "") or "/"
+    path = normalize_speed_path(getattr(platform, "speed_path", "")
+                                or getattr(platform, "path", "") or "/")
+    if getattr(platform, "speed_path", "") and "://" in str(platform.speed_path):
+        log(f"[{platform.name}] 测速路径填的是完整 URL，已自动取路径部分：{path}")
     seconds = float(getattr(platform, "speed_seconds", 3.0) or 3.0)
     if seconds > MAX_SECONDS:
         log(f"[{platform.name}] ⚠ 单个 IP 测速时长 {seconds:g}s 超过上限，按 {MAX_SECONDS:g}s 执行")

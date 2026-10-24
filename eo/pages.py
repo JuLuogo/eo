@@ -219,7 +219,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
     </section>
 
     <section class="card">
-      <h2>平台设置</h2>
+      <h2>平台设置 <span class="grow"></span>
+        <button id="btn-speedcheck" style="padding:4px 10px;font-size:12px"
+                title="拿结果文件里最快的 IP 真下一段，3~5 秒验证测速配置对不对">测速自检</button>
+      </h2>
       <div class="body" id="platforms"></div>
     </section>
 
@@ -829,6 +832,9 @@ function bind(){
     try{ await saveAll(); }catch(e){ return; }
     const r = await post('/api/control/dns-push', {force: force});
     toast(r.message + (r.ok ? '（筛选详情见「实时日志」）' : ''), r.ok?'ok':'err'); };
+  document.getElementById('btn-speedcheck').onclick = async ()=>{
+    const r = await post('/api/control/speed-check');
+    toast(r.message, r.ok?'ok':'err'); };
   document.getElementById('btn-clear').onclick = async ()=>{
     await post('/api/logs/clear');
     document.getElementById('log').innerHTML=''; LOG_CURSOR=0; toast('日志已清空'); };

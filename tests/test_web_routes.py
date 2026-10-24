@@ -78,7 +78,8 @@ print()
 print("1) 每个控制类端点都要有测试（这些会改状态，最需要覆盖）")
 # --------------------------------------------------------------------------
 CONTROL = ["/api/control/start", "/api/control/stop", "/api/control/run-once",
-           "/api/control/dns-preview", "/api/control/dns-push", "/api/logs/clear",
+           "/api/control/dns-preview", "/api/control/dns-push",
+           "/api/control/speed-check", "/api/logs/clear",
            "/api/config"]
 missing_control = [r for r in CONTROL if r not in tested_n]
 check("控制类端点全部有测试", not missing_control, str(missing_control))

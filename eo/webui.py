@@ -372,6 +372,81 @@ class OptimizerService:
     def dns_preview(self) -> tuple[bool, str]:
         return self.run_single({"dns_mode": "dry-run", "no_write": True})
 
+    def _first_result_ip(self, platform) -> str:
+        """结果文件里最快的那个 IP（测速自检用）。"""
+        path = getattr(platform, "output_file", "") or ""
+        if not path:
+            return ""
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    ip = line.split("\t")[0].strip()
+                    if ip:
+                        return ip
+        except OSError:
+            return ""
+        return ""
+
+    def speed_check(self) -> tuple[bool, str]:
+        """测速自检：拿每个平台结果文件里最快的 IP 真下一段，验证测速配置。
+
+        为什么需要：测速只在"前 N 个 IP"上跑，而一轮完整扫描要十几分钟；
+        路径填错（首页只有几 KB）、限速太狠、域名没绑证书 —— 这些配置问题
+        都要等一整轮才在日志里暴露。自检 3~5 秒就能给出结论。
+        """
+        with self.lock:
+            if self.runner.running:
+                busy = "手动任务" if self.runner.manual else "循环任务"
+                return False, f"已有{busy}在执行，请等它结束或先停止循环"
+            targets = [p for p in self.build_platforms()
+                       if p.enabled and getattr(p, "speed_test", False)]
+            if not targets:
+                return False, "没有平台启用测速（平台设置 → 展开平台 → 启用下载测速）"
+            plans = [(p, self._first_result_ip(p)) for p in targets]
+            if not any(ip for _p, ip in plans):
+                return False, "还没有结果文件，先跑一轮再来自检"
+
+            def worker(stop_event: threading.Event) -> None:
+                from .speed import normalize_speed_path, speed_probe
+
+                for platform, ip in plans:
+                    if stop_event.is_set():
+                        break
+                    if not ip:
+                        self.log(f"[{platform.name}] 自检跳过：还没有结果文件", level="warn")
+                        continue
+                    path = normalize_speed_path(getattr(platform, "speed_path", "")
+                                                or getattr(platform, "path", "") or "/")
+                    seconds = float(getattr(platform, "speed_seconds", 3.0) or 3.0)
+                    limit_note = (f"限速 {float(getattr(platform, 'speed_limit_mbps', 0) or 0):g}Mbps"
+                                  if float(getattr(platform, "speed_limit_mbps", 0) or 0) > 0
+                                  else "不限速")
+                    self.log(f"[{platform.name}] 测速自检 {ip} -> {platform.scheme}://"
+                             f"{platform.host}{path}（{seconds:g}s，{limit_note}）")
+                    got = speed_probe(
+                        ip, host=platform.host, port=platform.port, scheme=platform.scheme,
+                        path=path, seconds=seconds,
+                        limit_mbps=float(getattr(platform, "speed_limit_mbps", 0.0) or 0.0),
+                        max_bytes=int(float(getattr(platform, "speed_bytes_mb", 6.0) or 6.0)
+                                      * 1024 * 1024),
+                        timeout=max(seconds + 3.0, float(platform.timeout or 3.0)),
+                        stop_event=stop_event)
+                    if got.ok:
+                        need = float(getattr(platform, "min_speed_mbps", 0.0) or 0.0)
+                        verdict = ("达标" if (not need or got.mbps >= need)
+                                   else f"低于阈值 {need:g}Mbps，下发时会被丢弃")
+                        self.log(f"[{platform.name}] 自检结果 {got.mbps:.1f}Mbps"
+                                 f"（{got.bytes / 1024:.0f}KB / {got.seconds:.1f}s）-> {verdict}")
+                    else:
+                        self.log(f"[{platform.name}] 自检失败：{got.error}", level="error")
+                        self.log(f"[{platform.name}]   检查「测速路径」是否指向一个几 MB 的大文件；"
+                                 f"返回 301/302 也不会跟随")
+                self._on_event({"type": "state", "state": "idle"})
+
+            self.runner.manual = True
+            self.runner.start(lambda cycle, stop: worker(stop), interval=60, cycles=1)
+            return True, "已开始测速自检（结果见实时日志）"
+
     def dns_push(self, force: bool = False) -> tuple[bool, str]:
         """手动下发。force=True 时越过「解析量骤降保护」。
 
@@ -610,6 +685,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/control/dns-push":
             # 允许网页带 force 越过骤降保护（首次从几百条缩到十几条时会用到）
             ok, message = service.dns_push(force=bool(body.get("force", False)))
+            self._json({"ok": ok, "message": message}, 200 if ok else 409)
+        elif path == "/api/control/speed-check":
+            ok, message = service.speed_check()
             self._json({"ok": ok, "message": message}, 200 if ok else 409)
         elif path == "/api/logs/clear":
             service.logs = LogBuffer(service.store.get().log_buffer)

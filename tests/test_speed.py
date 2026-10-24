@@ -32,7 +32,8 @@ import eo.speed as speed_mod                                       # noqa: E402
 from eo.config_store import ConfigStore                           # noqa: E402
 from eo.core import Platform, Probe, write_result                  # noqa: E402
 from eo.dns import _parse_mbps, _parse_ms, _select_for_dns         # noqa: E402
-from eo.speed import SpeedResult, run_speed_tests, speed_probe     # noqa: E402
+from eo.speed import (SpeedResult, run_speed_tests, speed_probe,          # noqa: E402
+                      normalize_speed_path)
 
 _failures: list[str] = []
 WORK = Path(tempfile.mkdtemp(prefix="eo-speed-"))
@@ -298,6 +299,20 @@ check("速度列带 Mbps 单位", any(line.split("\t")[2].endswith("Mbps") for l
       lines[0] if lines else "")
 
 print()
+print("4b) 测速路径归一化：填完整 URL / 缺前导斜杠也能用")
+# --------------------------------------------------------------------------
+check("完整 URL -> 只取路径", normalize_speed_path("https://pcb.example.com/10mb.bin")
+      == "/10mb.bin", normalize_speed_path("https://pcb.example.com/10mb.bin"))
+check("URL 带查询串 -> 保留查询串",
+      normalize_speed_path("http://x.com/a/b.bin?x=1") == "/a/b.bin?x=1",
+      normalize_speed_path("http://x.com/a/b.bin?x=1"))
+check("只有域名 -> /", normalize_speed_path("https://x.com") == "/",
+      normalize_speed_path("https://x.com"))
+check("缺前导斜杠 -> 补上", normalize_speed_path("10mb.bin") == "/10mb.bin",
+      normalize_speed_path("10mb.bin"))
+check("空 -> /", normalize_speed_path("") == "/", normalize_speed_path(""))
+
+print()
 print("5) 结果文件解析：- / 空 / 12.3Mbps 都不能解析错")
 check("12.3Mbps -> 12.3", _parse_mbps("12.3Mbps") == 12.3, str(_parse_mbps("12.3Mbps")))
 check("'-' -> None（没测 ≠ 0）", _parse_mbps("-") is None, str(_parse_mbps("-")))
@@ -418,6 +433,51 @@ check("已有条目不会被补齐逻辑覆盖", saved.speed_test is True and sa
 plat = service.build_platforms(keys=["eo-lt"])[0]
 check("生效值来自网页设置", plat.speed_test is True and plat.min_speed_mbps == 15.0,
       f"{plat.speed_test}/{plat.min_speed_mbps}")
+
+# 测速自检：没有启用平台/没有结果文件时要给出可操作的提示（不能静默成功）
+print()
+print("8b) 测速自检入口")
+store3 = ConfigStore(Path(tempfile.mkdtemp(prefix="eo-speed-chk-")) / "config.json")
+service3 = OptimizerService(store3)
+try:
+    os.environ["EO_NETWORK"] = "lt"
+    ok, msg = service3.speed_check()
+    check("没启用测速时给出指引", ok is False and "启用下载测速" in msg, msg)
+    store3.update({"platforms": {"eo-lt": {"speed_test": True, "speed_path": "/10mb.bin"}}})
+    for key in ("esa-lt", "cft-lt"):
+        store3.update({"platforms": {key: {"speed_test": False}}})
+    ok, msg = service3.speed_check()
+    check("没有结果文件时提示先跑一轮", ok is False and "先跑一轮" in msg, msg)
+    routes_src = (ROOT / "eo" / "webui.py").read_text(encoding="utf-8")
+    check("有 /api/control/speed-check 路由", '"/api/control/speed-check"' in routes_src, "有")
+
+    # 成功路径：真的把结果文件里第一个 IP 拿去测（这里用假 prober，不联网）
+    res_file = Path(tempfile.mkdtemp(prefix="eo-speed-chk2-")) / "out.txt"
+    res_file.write_text("203.0.113.7\t42ms\t-\n", encoding="utf-8")
+    store3.update({"platforms": {"eo-lt": {"output_file": str(res_file),
+                                           "min_speed_mbps": 5.0}}})
+    real_probe = speed_mod.speed_probe
+    speed_mod.speed_probe = lambda ip, **kw: SpeedResult(ip=ip, ok=True, mbps=50.0,
+                                                        bytes=2 * 1024 * 1024, seconds=1.0)
+    try:
+        ok, msg = service3.speed_check()
+        check("自检能启动", ok is True, msg)
+        deadline = time.time() + 6
+        while service3.runner.running and time.time() < deadline:
+            time.sleep(0.05)
+        text = "\n".join(str(item.get("line") if isinstance(item, dict) else item)
+                         for item in service3.logs.tail(50))
+        check("自检日志里有实测速度", "50.0Mbps" in text, text[-120:].replace("\n", " | "))
+        check("自检给出了是否达标的结论", "达标" in text or "低于阈值" in text,
+              text[-120:].replace("\n", " | "))
+    finally:
+        speed_mod.speed_probe = real_probe
+finally:
+    for key, value in saved_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 print()
 print("9) 页面接线：测速字段与开关都在界面上")
